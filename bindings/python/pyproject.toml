@@ -1,0 +1,23 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "incidence"
+version = "0.1.4"
+description = "Python boundary for the incidence conserved-flow engine"
+requires-python = ">=3.12"
+
+[dependency-groups]
+dev = [
+    "maturin>=1.9,<2",
+    "pytest>=8,<10",
+]
+
+[tool.uv]
+package = false
+
+[tool.maturin]
+manifest-path = "Cargo.toml"
+python-source = "."
+module-name = "incidence._incidence"

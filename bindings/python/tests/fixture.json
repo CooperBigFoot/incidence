@@ -1,0 +1,939 @@
+{
+  "document_version": "v1",
+  "versions": {
+    "rule_ir": "v1",
+    "interpreter": "v1",
+    "numerical_semantics": "v1",
+    "canonical_encoding": "v1"
+  },
+  "finite_compartments": [
+    "muskingum",
+    "lag",
+    "linear-reservoir",
+    "evaporation",
+    "seepage",
+    "reservoir-policy",
+    "demand"
+  ],
+  "boundary_accounts": [
+    "outside"
+  ],
+  "connections": [
+    {
+      "source": "muskingum",
+      "target": "outside"
+    },
+    {
+      "source": "lag",
+      "target": "outside"
+    },
+    {
+      "source": "linear-reservoir",
+      "target": "outside"
+    },
+    {
+      "source": "evaporation",
+      "target": "outside"
+    },
+    {
+      "source": "seepage",
+      "target": "outside"
+    },
+    {
+      "source": "reservoir-policy",
+      "target": "outside"
+    },
+    {
+      "source": "demand",
+      "target": "outside"
+    }
+  ],
+  "substances": [
+    "water"
+  ],
+  "initial_stocks": [
+    {
+      "compartment": "muskingum",
+      "amounts": [
+        {
+          "substance": "water",
+          "amount": 100.0
+        }
+      ]
+    },
+    {
+      "compartment": "lag",
+      "amounts": [
+        {
+          "substance": "water",
+          "amount": 100.0
+        }
+      ]
+    },
+    {
+      "compartment": "linear-reservoir",
+      "amounts": [
+        {
+          "substance": "water",
+          "amount": 100.0
+        }
+      ]
+    },
+    {
+      "compartment": "evaporation",
+      "amounts": [
+        {
+          "substance": "water",
+          "amount": 100.0
+        }
+      ]
+    },
+    {
+      "compartment": "seepage",
+      "amounts": [
+        {
+          "substance": "water",
+          "amount": 100.0
+        }
+      ]
+    },
+    {
+      "compartment": "reservoir-policy",
+      "amounts": [
+        {
+          "substance": "water",
+          "amount": 100.0
+        }
+      ]
+    },
+    {
+      "compartment": "demand",
+      "amounts": [
+        {
+          "substance": "water",
+          "amount": 100.0
+        }
+      ]
+    }
+  ],
+  "calendar": {
+    "origin_unix_seconds": 0,
+    "timestep_seconds": 86400
+  },
+  "horizon": {
+    "first": 0,
+    "last": 2
+  },
+  "projections": {
+    "specifications": [
+      {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "id": "muskingum-in-lag",
+        "value_kind": "extensive",
+        "spec": {
+          "kind": "bounded_lag",
+          "source": {
+            "kind": "authoritative_fact",
+            "selector": {
+              "kind": "incoming_transfer_amount",
+              "compartment": "muskingum",
+              "substance": "water"
+            }
+          },
+          "steps": 1
+        }
+      },
+      {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "id": "muskingum-out-lag",
+        "value_kind": "extensive",
+        "spec": {
+          "kind": "bounded_lag",
+          "source": {
+            "kind": "authoritative_fact",
+            "selector": {
+              "kind": "outgoing_transfer_amount",
+              "compartment": "muskingum",
+              "substance": "water"
+            }
+          },
+          "steps": 1
+        }
+      },
+      {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "id": "muskingum-routed",
+        "value_kind": "extensive",
+        "spec": {
+          "kind": "finite_recurrence",
+          "state_kinds": [
+            "extensive"
+          ],
+          "inputs": [
+            {
+              "reference": {
+                "id": "muskingum-current-in",
+                "value_kind": "scalar"
+              },
+              "source": {
+                "kind": "authoritative_fact",
+                "selector": {
+                  "kind": "incoming_transfer_amount",
+                  "compartment": "muskingum",
+                  "substance": "water"
+                }
+              }
+            }
+          ],
+          "parameters": [
+            {
+              "id": "muskingum-c0",
+              "value_kind": "scalar"
+            },
+            {
+              "id": "muskingum-c1",
+              "value_kind": "scalar"
+            },
+            {
+              "id": "muskingum-c2",
+              "value_kind": "scalar"
+            }
+          ],
+          "updates": [
+            {
+              "rule_ir_version": "v1",
+              "numerical_semantics_version": "v1",
+              "expression": {
+                "kind": "add",
+                "lhs": {
+                  "kind": "add",
+                  "lhs": {
+                    "kind": "multiply",
+                    "lhs": {
+                      "kind": "parameter",
+                      "reference": {
+                        "id": "muskingum-c0",
+                        "value_kind": "scalar"
+                      }
+                    },
+                    "rhs": {
+                      "kind": "input",
+                      "reference": {
+                        "id": "muskingum-current-in",
+                        "value_kind": "scalar"
+                      }
+                    }
+                  },
+                  "rhs": {
+                    "kind": "multiply",
+                    "lhs": {
+                      "kind": "parameter",
+                      "reference": {
+                        "id": "muskingum-c1",
+                        "value_kind": "scalar"
+                      }
+                    },
+                    "rhs": {
+                      "kind": "projection",
+                      "reference": {
+                        "id": "muskingum-in-lag",
+                        "value_kind": "extensive"
+                      }
+                    }
+                  }
+                },
+                "rhs": {
+                  "kind": "multiply",
+                  "lhs": {
+                    "kind": "parameter",
+                    "reference": {
+                      "id": "muskingum-c2",
+                      "value_kind": "scalar"
+                    }
+                  },
+                  "rhs": {
+                    "kind": "projection",
+                    "reference": {
+                      "id": "muskingum-out-lag",
+                      "value_kind": "extensive"
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "output_index": 0
+        }
+      },
+      {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "id": "travel-time-lag",
+        "value_kind": "extensive",
+        "spec": {
+          "kind": "bounded_lag",
+          "source": {
+            "kind": "authoritative_fact",
+            "selector": {
+              "kind": "incoming_transfer_amount",
+              "compartment": "lag",
+              "substance": "water"
+            }
+          },
+          "steps": 2
+        }
+      },
+      {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "id": "linear-reservoir-state",
+        "value_kind": "extensive",
+        "spec": {
+          "kind": "finite_recurrence",
+          "state_kinds": [
+            "extensive",
+            "extensive"
+          ],
+          "inputs": [
+            {
+              "reference": {
+                "id": "linear-previous-storage",
+                "value_kind": "scalar"
+              },
+              "source": {
+                "kind": "previous_state",
+                "index": 0,
+                "value_kind": "extensive"
+              }
+            }
+          ],
+          "parameters": [
+            {
+              "id": "linear-coefficient",
+              "value_kind": "scalar"
+            }
+          ],
+          "updates": [
+            {
+              "rule_ir_version": "v1",
+              "numerical_semantics_version": "v1",
+              "expression": {
+                "kind": "multiply",
+                "lhs": {
+                  "kind": "subtract",
+                  "lhs": {
+                    "kind": "literal",
+                    "value": 1.0
+                  },
+                  "rhs": {
+                    "kind": "parameter",
+                    "reference": {
+                      "id": "linear-coefficient",
+                      "value_kind": "scalar"
+                    }
+                  }
+                },
+                "rhs": {
+                  "kind": "input",
+                  "reference": {
+                    "id": "linear-previous-storage",
+                    "value_kind": "scalar"
+                  }
+                }
+              }
+            },
+            {
+              "rule_ir_version": "v1",
+              "numerical_semantics_version": "v1",
+              "expression": {
+                "kind": "multiply",
+                "lhs": {
+                  "kind": "parameter",
+                  "reference": {
+                    "id": "linear-coefficient",
+                    "value_kind": "scalar"
+                  }
+                },
+                "rhs": {
+                  "kind": "input",
+                  "reference": {
+                    "id": "linear-previous-storage",
+                    "value_kind": "scalar"
+                  }
+                }
+              }
+            }
+          ],
+          "output_index": 1
+        }
+      }
+    ],
+    "initial_states": [
+      {
+        "projection": "linear-reservoir-state",
+        "values": [
+          {
+            "kind": "extensive",
+            "value": 8.0
+          },
+          {
+            "kind": "extensive",
+            "value": 0.0
+          }
+        ]
+      },
+      {
+        "projection": "muskingum-in-lag",
+        "values": [
+          {
+            "kind": "extensive",
+            "value": 4.0
+          }
+        ]
+      },
+      {
+        "projection": "muskingum-out-lag",
+        "values": [
+          {
+            "kind": "extensive",
+            "value": 2.0
+          }
+        ]
+      },
+      {
+        "projection": "muskingum-routed",
+        "values": [
+          {
+            "kind": "extensive",
+            "value": 0.0
+          }
+        ]
+      },
+      {
+        "projection": "travel-time-lag",
+        "values": [
+          {
+            "kind": "extensive",
+            "value": 3.0
+          },
+          {
+            "kind": "extensive",
+            "value": 2.0
+          }
+        ]
+      }
+    ]
+  },
+  "forcings": [
+    {
+      "id": "air-temperature",
+      "horizon": {
+        "first": 0,
+        "last": 2
+      },
+      "values": [
+        0.0,
+        10.0,
+        20.0
+      ]
+    },
+    {
+      "id": "seepage-available",
+      "horizon": {
+        "first": 0,
+        "last": 2
+      },
+      "values": [
+        10.0,
+        10.0,
+        10.0
+      ]
+    },
+    {
+      "id": "hydraulic-head",
+      "horizon": {
+        "first": 0,
+        "last": 2
+      },
+      "values": [
+        4.0,
+        6.0,
+        8.0
+      ]
+    },
+    {
+      "id": "policy-storage",
+      "horizon": {
+        "first": 0,
+        "last": 2
+      },
+      "values": [
+        40.0,
+        60.0,
+        45.0
+      ]
+    },
+    {
+      "id": "policy-available",
+      "horizon": {
+        "first": 0,
+        "last": 2
+      },
+      "values": [
+        10.0,
+        10.0,
+        10.0
+      ]
+    },
+    {
+      "id": "requested-demand",
+      "horizon": {
+        "first": 0,
+        "last": 2
+      },
+      "values": [
+        6.0,
+        8.0,
+        10.0
+      ]
+    },
+    {
+      "id": "demand-available",
+      "horizon": {
+        "first": 0,
+        "last": 2
+      },
+      "values": [
+        20.0,
+        20.0,
+        20.0
+      ]
+    }
+  ],
+  "interpolation_tables": [
+    {
+      "id": "evaporation-by-temperature",
+      "numerical_semantics_version": "v1",
+      "boundary_policy": "clamp_to_endpoint",
+      "abscissae": [
+        0.0,
+        10.0,
+        20.0
+      ],
+      "ordinates": [
+        1.0,
+        2.0,
+        3.0
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "compartment": "muskingum",
+      "substance": "water",
+      "expression": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "expression": {
+          "kind": "projection",
+          "reference": {
+            "id": "muskingum-routed",
+            "value_kind": "extensive"
+          }
+        }
+      },
+      "disposition": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "partition": {
+          "kind": "release_all",
+          "branch": "muskingum-out"
+        }
+      },
+      "parameters": [
+        {
+          "id": "muskingum-c0",
+          "value": 0.4
+        },
+        {
+          "id": "muskingum-c1",
+          "value": 0.3
+        },
+        {
+          "id": "muskingum-c2",
+          "value": 0.3
+        }
+      ]
+    },
+    {
+      "compartment": "lag",
+      "substance": "water",
+      "expression": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "expression": {
+          "kind": "projection",
+          "reference": {
+            "id": "travel-time-lag",
+            "value_kind": "extensive"
+          }
+        }
+      },
+      "disposition": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "partition": {
+          "kind": "release_all",
+          "branch": "lag-out"
+        }
+      },
+      "parameters": []
+    },
+    {
+      "compartment": "linear-reservoir",
+      "substance": "water",
+      "expression": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "expression": {
+          "kind": "projection",
+          "reference": {
+            "id": "linear-reservoir-state",
+            "value_kind": "extensive"
+          }
+        }
+      },
+      "disposition": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "partition": {
+          "kind": "release_all",
+          "branch": "linear-reservoir-out"
+        }
+      },
+      "parameters": [
+        {
+          "id": "linear-coefficient",
+          "value": 0.25
+        }
+      ]
+    },
+    {
+      "compartment": "evaporation",
+      "substance": "water",
+      "expression": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "expression": {
+          "kind": "interpolated_table",
+          "table": {
+            "id": "evaporation-by-temperature"
+          },
+          "input": {
+            "kind": "forcing",
+            "reference": {
+              "id": "air-temperature"
+            }
+          }
+        }
+      },
+      "disposition": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "partition": {
+          "kind": "release_all",
+          "branch": "evaporation-out"
+        }
+      },
+      "parameters": []
+    },
+    {
+      "compartment": "seepage",
+      "substance": "water",
+      "expression": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "expression": {
+          "kind": "minimum",
+          "lhs": {
+            "kind": "input",
+            "reference": {
+              "id": "seepage-available",
+              "value_kind": "scalar"
+            }
+          },
+          "rhs": {
+            "kind": "maximum",
+            "lhs": {
+              "kind": "literal",
+              "value": 0.0
+            },
+            "rhs": {
+              "kind": "multiply",
+              "lhs": {
+                "kind": "parameter",
+                "reference": {
+                  "id": "seepage-conductance",
+                  "value_kind": "scalar"
+                }
+              },
+              "rhs": {
+                "kind": "input",
+                "reference": {
+                  "id": "hydraulic-head",
+                  "value_kind": "scalar"
+                }
+              }
+            }
+          }
+        }
+      },
+      "disposition": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "partition": {
+          "kind": "release_all",
+          "branch": "seepage-out"
+        }
+      },
+      "parameters": [
+        {
+          "id": "seepage-conductance",
+          "value": 0.5
+        }
+      ]
+    },
+    {
+      "compartment": "reservoir-policy",
+      "substance": "water",
+      "expression": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "expression": {
+          "kind": "clamp",
+          "value": {
+            "kind": "select",
+            "condition": {
+              "kind": "comparison",
+              "comparison": "greater_than_or_equal",
+              "lhs": {
+                "kind": "input",
+                "reference": {
+                  "id": "policy-storage",
+                  "value_kind": "scalar"
+                }
+              },
+              "rhs": {
+                "kind": "parameter",
+                "reference": {
+                  "id": "flood-threshold",
+                  "value_kind": "scalar"
+                }
+              }
+            },
+            "when_true": {
+              "kind": "parameter",
+              "reference": {
+                "id": "flood-release",
+                "value_kind": "scalar"
+              }
+            },
+            "when_false": {
+              "kind": "parameter",
+              "reference": {
+                "id": "conservation-release",
+                "value_kind": "scalar"
+              }
+            }
+          },
+          "lower": {
+            "kind": "literal",
+            "value": 0.0
+          },
+          "upper": {
+            "kind": "input",
+            "reference": {
+              "id": "policy-available",
+              "value_kind": "scalar"
+            }
+          }
+        }
+      },
+      "disposition": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "partition": {
+          "kind": "release_all",
+          "branch": "reservoir-policy-out"
+        }
+      },
+      "parameters": [
+        {
+          "id": "flood-threshold",
+          "value": 50.0
+        },
+        {
+          "id": "flood-release",
+          "value": 8.0
+        },
+        {
+          "id": "conservation-release",
+          "value": 3.0
+        }
+      ]
+    },
+    {
+      "compartment": "demand",
+      "substance": "water",
+      "expression": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "expression": {
+          "kind": "minimum",
+          "lhs": {
+            "kind": "forcing",
+            "reference": {
+              "id": "requested-demand"
+            }
+          },
+          "rhs": {
+            "kind": "divide",
+            "lhs": {
+              "kind": "input",
+              "reference": {
+                "id": "demand-available",
+                "value_kind": "scalar"
+              }
+            },
+            "rhs": {
+              "kind": "parameter",
+              "reference": {
+                "id": "delivery-period",
+                "value_kind": "scalar"
+              }
+            }
+          }
+        }
+      },
+      "disposition": {
+        "rule_ir_version": "v1",
+        "numerical_semantics_version": "v1",
+        "partition": {
+          "kind": "release_all",
+          "branch": "demand-out"
+        }
+      },
+      "parameters": [
+        {
+          "id": "delivery-period",
+          "value": 2.0
+        }
+      ]
+    }
+  ],
+  "transfer_bindings": [
+    {
+      "compartment": "muskingum",
+      "substance": "water",
+      "branch": "muskingum-out",
+      "destination": "outside"
+    },
+    {
+      "compartment": "lag",
+      "substance": "water",
+      "branch": "lag-out",
+      "destination": "outside"
+    },
+    {
+      "compartment": "linear-reservoir",
+      "substance": "water",
+      "branch": "linear-reservoir-out",
+      "destination": "outside"
+    },
+    {
+      "compartment": "evaporation",
+      "substance": "water",
+      "branch": "evaporation-out",
+      "destination": "outside"
+    },
+    {
+      "compartment": "seepage",
+      "substance": "water",
+      "branch": "seepage-out",
+      "destination": "outside"
+    },
+    {
+      "compartment": "reservoir-policy",
+      "substance": "water",
+      "branch": "reservoir-policy-out",
+      "destination": "outside"
+    },
+    {
+      "compartment": "demand",
+      "substance": "water",
+      "branch": "demand-out",
+      "destination": "outside"
+    }
+  ],
+  "input_bindings": [
+    {
+      "compartment": "seepage",
+      "substance": "water",
+      "input": "seepage-available",
+      "value_kind": "scalar",
+      "source": {
+        "kind": "forcing",
+        "forcing": "seepage-available"
+      }
+    },
+    {
+      "compartment": "seepage",
+      "substance": "water",
+      "input": "hydraulic-head",
+      "value_kind": "scalar",
+      "source": {
+        "kind": "forcing",
+        "forcing": "hydraulic-head"
+      }
+    },
+    {
+      "compartment": "reservoir-policy",
+      "substance": "water",
+      "input": "policy-storage",
+      "value_kind": "scalar",
+      "source": {
+        "kind": "forcing",
+        "forcing": "policy-storage"
+      }
+    },
+    {
+      "compartment": "reservoir-policy",
+      "substance": "water",
+      "input": "policy-available",
+      "value_kind": "scalar",
+      "source": {
+        "kind": "forcing",
+        "forcing": "policy-available"
+      }
+    },
+    {
+      "compartment": "demand",
+      "substance": "water",
+      "input": "demand-available",
+      "value_kind": "scalar",
+      "source": {
+        "kind": "forcing",
+        "forcing": "demand-available"
+      }
+    }
+  ],
+  "units": [
+    {
+      "substance": "water",
+      "unit": "m3"
+    }
+  ]
+}

@@ -9,17 +9,18 @@ use incidence_core::model_artifact::ModelArtifactArchive;
 
 #[test]
 fn decoded_hydrology_model_emits_the_identical_transfer_log() {
-    let authored_document = hydrology::HydrologyModelDocument::fixture();
+    let authored_document = hydrology::fixture();
     let encoded = serde_json::to_vec(&authored_document)
         .unwrap_or_else(|error| panic!("model serialization failed: {error}"));
-    let decoded_document: hydrology::HydrologyModelDocument = serde_json::from_slice(&encoded)
-        .unwrap_or_else(|error| panic!("model deserialization failed: {error}"));
+    let decoded_document: incidence_core::model_document::ModelDocument =
+        serde_json::from_slice(&encoded)
+            .unwrap_or_else(|error| panic!("model deserialization failed: {error}"));
     let reencoded = serde_json::to_vec(&decoded_document)
         .unwrap_or_else(|error| panic!("model reserialization failed: {error}"));
     assert_eq!(reencoded, encoded);
 
-    let authored = authored_document.artifact();
-    let decoded = decoded_document.artifact();
+    let authored = authored_document.artifact().expect("authored artifact");
+    let decoded = decoded_document.artifact().expect("decoded artifact");
     assert_eq!(decoded.canonical_bytes(), authored.canonical_bytes());
     assert_eq!(decoded.digest(), authored.digest());
 
