@@ -28,7 +28,8 @@ def test_every_expression_combinator_builds_plain_validated_data():
     projection = incidence.projection("storage", "extensive")
     addition = incidence.add(one, parameter)
     multiplication = incidence.mul(addition, forcing)
-    minimum = incidence.min(multiplication, generic_input)
+    powered = incidence.power(multiplication, incidence.literal(0.5))
+    minimum = incidence.min(powered, generic_input)
     maximum = incidence.max(minimum, projection)
     clamped = incidence.clamp(maximum, one, incidence.literal(100.0))
     condition = incidence.compare("greater_than", generic_input, two)
@@ -37,7 +38,7 @@ def test_every_expression_combinator_builds_plain_validated_data():
 
     for expression in (
         one, parameter, generic_input, forcing, projection, addition,
-        multiplication, minimum, maximum, clamped, selected, lookup,
+        multiplication, powered, minimum, maximum, clamped, selected, lookup,
     ):
         _assert_plain_roundtrip(expression)
 
