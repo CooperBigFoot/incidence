@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "bindings/python"]
 
 # Denied only in library crates: each crates/* manifest opts in via `[lints] workspace = true`.
 # The root binary crate deliberately does not inherit these (`.expect("reason")` allowed in main.rs).
