@@ -20,7 +20,7 @@ fn all_seven_hydrology_rules_run_to_completion_in_one_model() {
     assert!(log.is_sealed());
     assert_eq!(
         log.digest().to_hex(),
-        "ab7ea6531e55332f155caf6f685c6551ee86ae1a7d8d749bbe37925137fde82a"
+        "60c120b0d2a03ae4c9aada1d938a5d50be80398ac6d786cb2350c09b58e4ab67"
     );
     assert_eq!(
         artifact.digest().to_hex(),

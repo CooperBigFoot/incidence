@@ -12,7 +12,9 @@ use sha2::{Digest, Sha256};
 use crate::endpoints::{BoundaryAccount, FiniteCompartment};
 use crate::identity::{CompartmentId, SubstanceId};
 use crate::initial_stocks::InitialStocks;
-use crate::model_artifact::{ModelArtifact, ModelArtifactArchive, ModelDigest};
+use crate::model_artifact::{
+    MAX_EXACT_WHOLE_MULTIPLE_COUNT, ModelArtifact, ModelArtifactArchive, ModelDigest,
+};
 use crate::non_negative_amount::NonNegativeAmount;
 use crate::numerical_semantics::NumericalSemanticsVersion;
 use crate::presence::ValueState;
@@ -446,11 +448,18 @@ pub enum RunStatus {
 }
 
 /// A deterministically replayed stock state at one point in record order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct QuantumParts {
+    count: i64,
+    remainder: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct StockState {
     registry: SubstanceRegistry,
     finite: BTreeMap<(CompartmentId, SubstanceId), NonNegativeAmount>,
     boundary: BTreeMap<(CompartmentId, SubstanceId), SignedBoundaryBalance>,
+    quantum_parts: BTreeMap<(CompartmentId, SubstanceId), QuantumParts>,
 }
 impl StockState {
     /// Queries a finite stock without conflating an unmodelled substance with zero.
@@ -483,6 +492,18 @@ impl StockState {
             .copied()
             .map_or(ValueState::Absent, ValueState::Present)
     }
+    pub(crate) fn finite_quantum_parts(
+        &self,
+        compartment: &CompartmentId,
+        substance: &SubstanceId,
+    ) -> Option<(u64, f64)> {
+        let parts = self
+            .quantum_parts
+            .get(&(compartment.clone(), substance.clone()))?;
+        let count = u64::try_from(parts.count).ok()?;
+        Some((count, parts.remainder))
+    }
+
     pub fn finite_stocks(
         &self,
     ) -> impl Iterator<Item = (&(CompartmentId, SubstanceId), &NonNegativeAmount)> {
@@ -556,25 +577,10 @@ impl Replay {
         if !self.artifact.registry().contains(substance) {
             return Ok(ValueState::NotModelled);
         }
-        let semantics = self.artifact.versions().numerical_semantics();
-        let initial = seed_state(
-            self.artifact.topology(),
-            self.artifact.registry(),
-            self.artifact.initial_stocks(),
-        )?;
+        let initial = seed_state(&self.artifact)?;
         Ok(ValueState::Present(ConservationTotals {
-            genesis_total: reduce_state_total(
-                &initial,
-                self.artifact.topology(),
-                substance,
-                semantics,
-            )?,
-            final_total: reduce_state_total(
-                &self.final_state,
-                self.artifact.topology(),
-                substance,
-                semantics,
-            )?,
+            genesis_total: reduce_state_total(&initial, &self.artifact, substance)?,
+            final_total: reduce_state_total(&self.final_state, &self.artifact, substance)?,
         }))
     }
 }
@@ -678,11 +684,7 @@ fn replay(log: &AuthoritativeLog, artifact: Arc<ModelArtifact>) -> Result<Replay
             });
         }
     }
-    let mut state = seed_state(
-        artifact.topology(),
-        artifact.registry(),
-        artifact.initial_stocks(),
-    )?;
+    let mut state = seed_state(&artifact)?;
     let mut by_timestep = BTreeMap::new();
     let mut cursor = 0_usize;
     let horizon = artifact.horizon();
@@ -738,37 +740,62 @@ fn replay(log: &AuthoritativeLog, artifact: Arc<ModelArtifact>) -> Result<Replay
     })
 }
 
-fn seed_state(
-    topology: &Topology,
-    registry: &SubstanceRegistry,
-    initial: &InitialStocks,
-) -> Result<StockState, ReplayError> {
+fn seed_state(artifact: &ModelArtifact) -> Result<StockState, ReplayError> {
     let mut finite = BTreeMap::new();
     let mut boundary = BTreeMap::new();
-    for endpoint in topology.endpoints() {
-        for substance in registry.iter() {
+    let mut quantum_parts = BTreeMap::new();
+    for endpoint in artifact.topology().endpoints() {
+        for substance in artifact.registry().iter() {
             let key = (endpoint.id().clone(), substance.clone());
+            let quantum =
+                artifact
+                    .quantum(substance)
+                    .ok_or_else(|| ReplayError::ConservationReduction {
+                        substance: substance.clone(),
+                    })?;
             match endpoint {
                 TopologyEndpoint::Finite(_) => {
-                    let amount = match initial
+                    let amount = match artifact
+                        .initial_stocks()
                         .amount(endpoint.id(), substance)
                         .map_err(|_| ReplayError::GenesisStocksMismatch)?
                     {
-                        ValueState::Present(v) => v,
+                        ValueState::Present(value) => value,
                         _ => return Err(ReplayError::GenesisRegistryMismatch),
                     };
-                    finite.insert(key, amount);
+                    let (count, remainder) = quantum.split(amount.value()).ok_or_else(|| {
+                        ReplayError::NonFiniteFold {
+                            compartment: endpoint.id().clone(),
+                            substance: substance.clone(),
+                            timestep: artifact.horizon().first(),
+                        }
+                    })?;
+                    let count = i64::try_from(count).map_err(|_| ReplayError::NonFiniteFold {
+                        compartment: endpoint.id().clone(),
+                        substance: substance.clone(),
+                        timestep: artifact.horizon().first(),
+                    })?;
+                    finite.insert(key.clone(), amount);
+                    quantum_parts.insert(key, QuantumParts { count, remainder });
                 }
                 TopologyEndpoint::Boundary(_) => {
-                    boundary.insert(key, SignedBoundaryBalance::ZERO);
+                    boundary.insert(key.clone(), SignedBoundaryBalance::ZERO);
+                    quantum_parts.insert(
+                        key,
+                        QuantumParts {
+                            count: 0,
+                            remainder: 0.0,
+                        },
+                    );
                 }
             }
         }
     }
     Ok(StockState {
-        registry: registry.clone(),
+        registry: artifact.registry().clone(),
         finite,
         boundary,
+        quantum_parts,
     })
 }
 
@@ -779,10 +806,9 @@ fn apply_transfer(
 ) -> Result<(), ReplayError> {
     let mut staged = state.clone();
     apply_transfer_uncommitted(&mut staged, transfer, artifact)?;
-    let semantics = artifact.versions().numerical_semantics();
     for (substance, _) in transfer.amounts.iter() {
-        let before = reduce_state_total(state, artifact.topology(), substance, semantics)?;
-        let after = reduce_state_total(&staged, artifact.topology(), substance, semantics)?;
+        let before = reduce_state_total(state, artifact, substance)?;
+        let after = reduce_state_total(&staged, artifact, substance)?;
         if before.to_bits() != after.to_bits() {
             return Err(ReplayError::NumericalConservationLoss {
                 substance: substance.clone(),
@@ -798,32 +824,54 @@ fn apply_transfer(
 
 fn reduce_state_total(
     state: &StockState,
-    topology: &Topology,
+    artifact: &ModelArtifact,
     substance: &SubstanceId,
-    semantics: NumericalSemanticsVersion,
 ) -> Result<f64, ReplayError> {
-    let mut total = 0.0;
-    for endpoint in topology.endpoints() {
-        let value = match endpoint {
-            TopologyEndpoint::Finite(_) => state
-                .finite
-                .get(&(endpoint.id().clone(), substance.clone()))
-                .map(|value| value.value()),
-            TopologyEndpoint::Boundary(_) => state
-                .boundary
-                .get(&(endpoint.id().clone(), substance.clone()))
-                .map(|value| value.value()),
-        }
-        .ok_or_else(|| ReplayError::ConservationReduction {
-            substance: substance.clone(),
-        })?;
-        total = semantics
-            .add(total, value)
-            .map_err(|_| ReplayError::ConservationReduction {
+    let semantics = artifact.versions().numerical_semantics();
+    let quantum =
+        artifact
+            .quantum(substance)
+            .ok_or_else(|| ReplayError::ConservationReduction {
                 substance: substance.clone(),
             })?;
+    let mut count = 0_i128;
+    let mut remainder = 0.0;
+    for endpoint in artifact.topology().endpoints() {
+        let parts = state
+            .quantum_parts
+            .get(&(endpoint.id().clone(), substance.clone()))
+            .ok_or_else(|| ReplayError::ConservationReduction {
+                substance: substance.clone(),
+            })?;
+        count = count.checked_add(i128::from(parts.count)).ok_or_else(|| {
+            ReplayError::ConservationReduction {
+                substance: substance.clone(),
+            }
+        })?;
+        remainder = semantics.add(remainder, parts.remainder).map_err(|_| {
+            ReplayError::ConservationReduction {
+                substance: substance.clone(),
+            }
+        })?;
     }
-    Ok(total)
+    let count = i64::try_from(count).map_err(|_| ReplayError::ConservationReduction {
+        substance: substance.clone(),
+    })?;
+    if count.unsigned_abs() > MAX_EXACT_WHOLE_MULTIPLE_COUNT {
+        return Err(ReplayError::ConservationReduction {
+            substance: substance.clone(),
+        });
+    }
+    let whole = semantics
+        .multiply(count as f64, quantum.value())
+        .map_err(|_| ReplayError::ConservationReduction {
+            substance: substance.clone(),
+        })?;
+    semantics
+        .add(whole, remainder)
+        .map_err(|_| ReplayError::ConservationReduction {
+            substance: substance.clone(),
+        })
 }
 
 fn apply_transfer_uncommitted(
@@ -847,11 +895,9 @@ fn apply_transfer_uncommitted(
             timestep: transfer.timestep,
         });
     }
-    let connected = artifact
-        .topology()
-        .connections()
-        .iter()
-        .any(|c| c.source() == transfer.source.id() && c.target() == transfer.target.id());
+    let connected = artifact.topology().connections().iter().any(|connection| {
+        connection.source() == transfer.source.id() && connection.target() == transfer.target.id()
+    });
     if !connected {
         return Err(ReplayError::UndeclaredConnection {
             connection_source: transfer.source.id().clone(),
@@ -865,111 +911,159 @@ fn apply_transfer_uncommitted(
         });
     }
     for (substance, amount) in transfer.amounts.iter() {
+        let quantum =
+            artifact
+                .quantum(substance)
+                .ok_or_else(|| ReplayError::ConservationReduction {
+                    substance: substance.clone(),
+                })?;
+        let count =
+            quantum
+                .whole_count(amount.value())
+                .ok_or_else(|| ReplayError::NonQuantumTransfer {
+                    substance: substance.clone(),
+                    timestep: transfer.timestep,
+                    amount_bits: amount.value().to_bits(),
+                    quantum_bits: quantum.value().to_bits(),
+                })?;
+        let count = i64::try_from(count).map_err(|_| ReplayError::NonFiniteFold {
+            compartment: transfer.source.id().clone(),
+            substance: substance.clone(),
+            timestep: transfer.timestep,
+        })?;
         let source_key = (transfer.source.id().clone(), substance.clone());
         let target_key = (transfer.target.id().clone(), substance.clone());
-        if transfer.source.is_finite() {
-            let current = state.finite.get(&source_key).copied().ok_or_else(|| {
+        let source_parts = state
+            .quantum_parts
+            .get(&source_key)
+            .copied()
+            .ok_or_else(|| ReplayError::EndpointKindMismatch {
+                compartment: transfer.source.id().clone(),
+            })?;
+        if transfer.source.is_finite() && count > source_parts.count {
+            let available = state.finite.get(&source_key).copied().ok_or_else(|| {
                 ReplayError::EndpointKindMismatch {
                     compartment: transfer.source.id().clone(),
                 }
             })?;
-            if amount.value() > current.value() {
-                return Err(ReplayError::Overdraw {
-                    compartment: transfer.source.id().clone(),
-                    substance: substance.clone(),
-                    timestep: transfer.timestep,
-                    available_bits: current.value().to_bits(),
-                    requested_bits: amount.value().to_bits(),
-                });
-            }
-            let next = artifact
-                .versions()
-                .numerical_semantics()
-                .subtract(current.value(), amount.value())
-                .map_err(|_| ReplayError::NonFiniteFold {
-                    compartment: transfer.source.id().clone(),
-                    substance: substance.clone(),
-                    timestep: transfer.timestep,
-                })?;
-            let parsed =
-                NonNegativeAmount::try_from(next).map_err(|_| ReplayError::NonFiniteFold {
-                    compartment: transfer.source.id().clone(),
-                    substance: substance.clone(),
-                    timestep: transfer.timestep,
-                })?;
-            state.finite.insert(source_key, parsed);
-        } else {
-            update_boundary(
-                &mut state.boundary,
-                source_key,
-                -amount.value(),
-                artifact.versions().numerical_semantics(),
-                transfer,
-                substance,
-            )?;
+            return Err(ReplayError::Overdraw {
+                compartment: transfer.source.id().clone(),
+                substance: substance.clone(),
+                timestep: transfer.timestep,
+                available_bits: available.value().to_bits(),
+                requested_bits: amount.value().to_bits(),
+            });
         }
-        if transfer.target.is_finite() {
-            let current = state.finite.get(&target_key).copied().ok_or_else(|| {
-                ReplayError::EndpointKindMismatch {
-                    compartment: transfer.target.id().clone(),
-                }
+        let target_parts = state
+            .quantum_parts
+            .get(&target_key)
+            .copied()
+            .ok_or_else(|| ReplayError::EndpointKindMismatch {
+                compartment: transfer.target.id().clone(),
             })?;
-            let next = artifact
-                .versions()
-                .numerical_semantics()
-                .add(current.value(), amount.value())
-                .map_err(|_| ReplayError::NonFiniteFold {
+        let next_source = QuantumParts {
+            count: source_parts.count.checked_sub(count).ok_or_else(|| {
+                ReplayError::NonFiniteFold {
+                    compartment: transfer.source.id().clone(),
+                    substance: substance.clone(),
+                    timestep: transfer.timestep,
+                }
+            })?,
+            remainder: source_parts.remainder,
+        };
+        let next_target = QuantumParts {
+            count: target_parts.count.checked_add(count).ok_or_else(|| {
+                ReplayError::NonFiniteFold {
                     compartment: transfer.target.id().clone(),
                     substance: substance.clone(),
                     timestep: transfer.timestep,
-                })?;
-            let parsed =
-                NonNegativeAmount::try_from(next).map_err(|_| ReplayError::NonFiniteFold {
-                    compartment: transfer.target.id().clone(),
-                    substance: substance.clone(),
-                    timestep: transfer.timestep,
-                })?;
-            state.finite.insert(target_key, parsed);
-        } else {
-            update_boundary(
-                &mut state.boundary,
-                target_key,
-                amount.value(),
-                artifact.versions().numerical_semantics(),
-                transfer,
-                substance,
-            )?;
-        }
+                }
+            })?,
+            remainder: target_parts.remainder,
+        };
+        state.quantum_parts.insert(source_key.clone(), next_source);
+        state.quantum_parts.insert(target_key.clone(), next_target);
+        let semantics = artifact.versions().numerical_semantics();
+        refresh_endpoint(
+            state,
+            &source_key,
+            transfer.source(),
+            quantum,
+            semantics,
+            transfer,
+            substance,
+        )?;
+        refresh_endpoint(
+            state,
+            &target_key,
+            transfer.target(),
+            quantum,
+            semantics,
+            transfer,
+            substance,
+        )?;
     }
     Ok(())
 }
-fn update_boundary(
-    map: &mut BTreeMap<(CompartmentId, SubstanceId), SignedBoundaryBalance>,
-    key: (CompartmentId, SubstanceId),
-    delta: f64,
+
+fn refresh_endpoint(
+    state: &mut StockState,
+    key: &(CompartmentId, SubstanceId),
+    endpoint: &TransferEndpoint,
+    quantum: crate::model_artifact::Quantum,
     semantics: NumericalSemanticsVersion,
     transfer: &Transfer,
     substance: &SubstanceId,
 ) -> Result<(), ReplayError> {
-    let current = map
-        .get(&key)
-        .copied()
-        .ok_or_else(|| ReplayError::EndpointKindMismatch {
-            compartment: key.0.clone(),
-        })?;
-    let exact = semantics
-        .add(current.value(), delta)
+    let parts =
+        state
+            .quantum_parts
+            .get(key)
+            .copied()
+            .ok_or_else(|| ReplayError::EndpointKindMismatch {
+                compartment: endpoint.id().clone(),
+            })?;
+    if parts.count.unsigned_abs() > MAX_EXACT_WHOLE_MULTIPLE_COUNT {
+        return Err(ReplayError::NonFiniteFold {
+            compartment: endpoint.id().clone(),
+            substance: substance.clone(),
+            timestep: transfer.timestep,
+        });
+    }
+    let whole = semantics
+        .multiply(parts.count as f64, quantum.value())
         .map_err(|_| ReplayError::NonFiniteFold {
-            compartment: key.0.clone(),
+            compartment: endpoint.id().clone(),
             substance: substance.clone(),
             timestep: transfer.timestep,
         })?;
-    let next = SignedBoundaryBalance::try_from(exact).map_err(|_| ReplayError::NonFiniteFold {
-        compartment: key.0.clone(),
-        substance: substance.clone(),
-        timestep: transfer.timestep,
-    })?;
-    map.insert(key, next);
+    let value = semantics
+        .add(whole, parts.remainder)
+        .map_err(|_| ReplayError::NonFiniteFold {
+            compartment: endpoint.id().clone(),
+            substance: substance.clone(),
+            timestep: transfer.timestep,
+        })?;
+    match endpoint {
+        TransferEndpoint::Finite(_) => {
+            let amount =
+                NonNegativeAmount::try_from(value).map_err(|_| ReplayError::NonFiniteFold {
+                    compartment: endpoint.id().clone(),
+                    substance: substance.clone(),
+                    timestep: transfer.timestep,
+                })?;
+            state.finite.insert(key.clone(), amount);
+        }
+        TransferEndpoint::Boundary(_) => {
+            let balance =
+                SignedBoundaryBalance::try_from(value).map_err(|_| ReplayError::NonFiniteFold {
+                    compartment: endpoint.id().clone(),
+                    substance: substance.clone(),
+                    timestep: transfer.timestep,
+                })?;
+            state.boundary.insert(key.clone(), balance);
+        }
+    }
     Ok(())
 }
 fn validate_endpoint(endpoint: &TransferEndpoint, topology: &Topology) -> Result<(), ReplayError> {
@@ -1000,6 +1094,16 @@ pub enum ReplayError {
         timestep: TimestepIndex,
         before_bits: u64,
         after_bits: u64,
+    },
+    /// Fires when a transfer amount is not the exact binary64 image of whole declared quanta.
+    #[error(
+        "transfer at {timestep:?} carries non-quantized amount bits {amount_bits:#018x} for `{substance}` under quantum bits {quantum_bits:#018x}"
+    )]
+    NonQuantumTransfer {
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+        amount_bits: u64,
+        quantum_bits: u64,
     },
     /// Fires when a caller explicitly requires a completed run but receives a prefix.
     #[error("authoritative log is a resumable prefix without RunCompleted")]
