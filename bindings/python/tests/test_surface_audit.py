@@ -22,7 +22,7 @@ def test_complete_public_surface_has_no_bare_time_series() -> None:
     result = run.transfer_series("demand", "water")
 
     assert set(name for name in dir(run) if not name.startswith("_")) == {
-        "transfer_series"
+        "authoritative_log", "transfer_series"
     }
     assert isinstance(result, incidence.PresenceSeries)
     assert len(result.timesteps) == len(result.values) == len(result.presence)
@@ -37,5 +37,5 @@ def test_complete_public_surface_has_no_bare_time_series() -> None:
         for name, member in inspect.getmembers(incidence.CompletedRun)
         if not name.startswith("_") and callable(member)
     ]
-    assert time_accessors == ["transfer_series"]
+    assert time_accessors == ["authoritative_log", "transfer_series"]
     assert not is_numeric_sequence(result)

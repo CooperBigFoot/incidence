@@ -327,6 +327,19 @@ impl AuthoritativeLog {
         ));
         self.seal.as_ref().ok_or(LogError::AlreadySealed)
     }
+    /// Returns the canonical bytes of Genesis and all currently stored Transfers.
+    ///
+    /// These are the exact bytes authenticated by [`Self::digest`]. The completion seal is
+    /// returned separately as authentication metadata and is therefore never part of this byte
+    /// sequence.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        write_records(&self.genesis, &self.transfers, &mut |chunk| {
+            bytes.extend_from_slice(chunk);
+        });
+        bytes
+    }
     /// Returns the digest of Genesis and all currently stored Transfers (never the seal).
     #[must_use]
     pub fn digest(&self) -> LogDigest {
@@ -1103,26 +1116,30 @@ pub fn incidence_columns_close(log: &AuthoritativeLog) -> bool {
 }
 
 fn digest_records(genesis: &Genesis, transfers: &[Transfer]) -> LogDigest {
-    let mut h = Sha256::new();
-    h.update(b"incidence:authoritative-log:v1\0");
-    h.update(genesis.run_id.as_bytes());
-    h.update(genesis.model_digest.as_bytes());
-    h.update([version_byte(genesis.numerical_semantics)]);
-    hash_initial(&mut h, &genesis.initial_stocks);
-    h.update((transfers.len() as u64).to_be_bytes());
+    let mut hasher = Sha256::new();
+    write_records(genesis, transfers, &mut |chunk| hasher.update(chunk));
+    LogDigest(hasher.finalize().into())
+}
+
+fn write_records(genesis: &Genesis, transfers: &[Transfer], sink: &mut impl FnMut(&[u8])) {
+    sink(b"incidence:authoritative-log:v1\0");
+    sink(genesis.run_id.as_bytes());
+    sink(genesis.model_digest.as_bytes());
+    sink(&[version_byte(genesis.numerical_semantics)]);
+    write_initial(sink, &genesis.initial_stocks);
+    sink(&(transfers.len() as u64).to_be_bytes());
     for transfer in transfers {
-        h.update(transfer.timestep.value().to_be_bytes());
-        hash_endpoint(&mut h, &transfer.source);
-        hash_endpoint(&mut h, &transfer.target);
-        hash_registry(&mut h, transfer.amounts.registry());
+        sink(&transfer.timestep.value().to_be_bytes());
+        write_endpoint(sink, &transfer.source);
+        write_endpoint(sink, &transfer.target);
+        write_registry(sink, transfer.amounts.registry());
         let entries = transfer.amounts.iter().collect::<Vec<_>>();
-        h.update((entries.len() as u64).to_be_bytes());
+        sink(&(entries.len() as u64).to_be_bytes());
         for (substance, amount) in entries {
-            hash_string(&mut h, substance.as_str());
-            h.update(amount.value().to_bits().to_be_bytes());
+            write_string(sink, substance.as_str());
+            sink(&amount.value().to_bits().to_be_bytes());
         }
     }
-    LogDigest(h.finalize().into())
 }
 fn version_byte(value: NumericalSemanticsVersion) -> u8 {
     match value {
@@ -1130,47 +1147,47 @@ fn version_byte(value: NumericalSemanticsVersion) -> u8 {
         NumericalSemanticsVersion::V2 => 2,
     }
 }
-fn hash_initial(h: &mut Sha256, initial: &InitialStocks) {
+fn write_initial(sink: &mut impl FnMut(&[u8]), initial: &InitialStocks) {
     let endpoints = initial.topology().endpoints().collect::<Vec<_>>();
-    h.update((endpoints.len() as u64).to_be_bytes());
+    sink(&(endpoints.len() as u64).to_be_bytes());
     for endpoint in endpoints {
-        h.update([if matches!(endpoint, TopologyEndpoint::Finite(_)) {
+        sink(&[if matches!(endpoint, TopologyEndpoint::Finite(_)) {
             0
         } else {
             1
         }]);
-        hash_string(h, endpoint.id().as_str());
+        write_string(sink, endpoint.id().as_str());
     }
     let connections = initial.topology().connections();
-    h.update((connections.len() as u64).to_be_bytes());
+    sink(&(connections.len() as u64).to_be_bytes());
     for connection in connections {
-        hash_string(h, connection.source().as_str());
-        hash_string(h, connection.target().as_str());
+        write_string(sink, connection.source().as_str());
+        write_string(sink, connection.target().as_str());
     }
-    hash_registry(h, initial.registry());
+    write_registry(sink, initial.registry());
     let entries = initial.iter().collect::<Vec<_>>();
-    h.update((entries.len() as u64).to_be_bytes());
+    sink(&(entries.len() as u64).to_be_bytes());
     for (compartment, vector) in entries {
-        hash_string(h, compartment.as_str());
+        write_string(sink, compartment.as_str());
         let amounts = vector.iter().collect::<Vec<_>>();
-        h.update((amounts.len() as u64).to_be_bytes());
+        sink(&(amounts.len() as u64).to_be_bytes());
         for (substance, amount) in amounts {
-            hash_string(h, substance.as_str());
-            h.update(amount.value().to_bits().to_be_bytes());
+            write_string(sink, substance.as_str());
+            sink(&amount.value().to_bits().to_be_bytes());
         }
     }
 }
-fn hash_registry(h: &mut Sha256, registry: &SubstanceRegistry) {
-    h.update((registry.len() as u64).to_be_bytes());
+fn write_registry(sink: &mut impl FnMut(&[u8]), registry: &SubstanceRegistry) {
+    sink(&(registry.len() as u64).to_be_bytes());
     for substance in registry.iter() {
-        hash_string(h, substance.as_str());
+        write_string(sink, substance.as_str());
     }
 }
-fn hash_endpoint(h: &mut Sha256, endpoint: &TransferEndpoint) {
-    h.update([if endpoint.is_finite() { 0 } else { 1 }]);
-    hash_string(h, endpoint.id().as_str());
+fn write_endpoint(sink: &mut impl FnMut(&[u8]), endpoint: &TransferEndpoint) {
+    sink(&[if endpoint.is_finite() { 0 } else { 1 }]);
+    write_string(sink, endpoint.id().as_str());
 }
-fn hash_string(h: &mut Sha256, value: &str) {
-    h.update((value.len() as u64).to_be_bytes());
-    h.update(value.as_bytes());
+fn write_string(sink: &mut impl FnMut(&[u8]), value: &str) {
+    sink(&(value.len() as u64).to_be_bytes());
+    sink(value.as_bytes());
 }
