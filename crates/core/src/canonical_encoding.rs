@@ -57,6 +57,19 @@ pub enum CanonicalField {
     InterpolationTablePoints,
     InterpolationTableAbscissa,
     InterpolationTableOrdinate,
+    ArtifactProjections,
+    ArtifactProjectorStates,
+    ArtifactForcings,
+    ArtifactTables,
+    ArtifactRules,
+    ArtifactRuleCompartment,
+    ArtifactRuleSubstance,
+    ArtifactParameters,
+    ArtifactParameterIdentity,
+    ArtifactParameterValue,
+    ArtifactUnits,
+    ArtifactUnitSubstance,
+    ArtifactUnitIdentity,
 }
 
 /// A checked failure to produce canonical bytes.
@@ -200,7 +213,21 @@ macro_rules! version_encoding {
 version_encoding!(RuleIrVersion, 0x0001);
 version_encoding!(InterpreterVersion, 0x0002);
 version_encoding!(CanonicalEncodingVersion, 0x0003);
-version_encoding!(NumericalSemanticsVersion, 0x0004);
+impl CanonicalEncode for NumericalSemanticsVersion {
+    fn root_tag(&self) -> u16 {
+        0x0004
+    }
+    fn encode_payload(
+        &self,
+        writer: &mut CanonicalPayloadWriter,
+    ) -> Result<(), CanonicalEncodingError> {
+        writer.write_u16(match self {
+            Self::V1 => VERSION_V1,
+            Self::V2 => 2,
+        });
+        Ok(())
+    }
+}
 
 fn encode_registry_payload(
     registry: &SubstanceRegistry,
@@ -420,8 +447,13 @@ impl CanonicalEncode for ProjectionSpec {
         &self,
         writer: &mut CanonicalPayloadWriter,
     ) -> Result<(), CanonicalEncodingError> {
-        writer.write_u16(1);
-        writer.write_u16(1);
+        writer.write_u16(match self.rule_ir_version() {
+            RuleIrVersion::V1 => 1,
+        });
+        writer.write_u16(match self.numerical_semantics_version() {
+            NumericalSemanticsVersion::V1 => 1,
+            NumericalSemanticsVersion::V2 => 2,
+        });
         writer.write_string(CanonicalField::ProjectionIdentity, self.id().as_str())?;
         writer.write_u8(projection_kind_tag(self.value_kind()));
         match self.view() {

@@ -7,6 +7,8 @@ use crate::non_negative_amount::{NonNegativeAmount, NonNegativeAmountError};
 pub enum NumericalSemanticsVersion {
     /// Literal authoritative-order binary64 semantics.
     V1,
+    /// The second protocol identity, retaining V1 ordered binary64 operations.
+    V2,
 }
 
 /// A scalar operation whose identity is carried by numerical diagnostics.

@@ -224,6 +224,7 @@ impl CanonicalEncode for InterpolationTable {
         writer.write_string(CanonicalField::InterpolationTableIdentity, self.id.as_str())?;
         match self.numerical_semantics_version {
             NumericalSemanticsVersion::V1 => writer.write_u16(0x0001),
+            NumericalSemanticsVersion::V2 => writer.write_u16(0x0002),
         }
         writer.write_u8(match self.boundary_policy {
             InterpolationBoundaryPolicy::Reject => 0x00,
