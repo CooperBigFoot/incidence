@@ -6,6 +6,7 @@ pub mod forcing;
 pub mod identity;
 pub mod initial_stocks;
 pub mod interpolation_table;
+pub mod ledger;
 pub mod model_artifact;
 pub mod non_negative_amount;
 pub mod numerical_semantics;
@@ -23,4 +24,20 @@ pub mod versions;
 
 pub mod workspace {
     //! `workspace_boundary : InitializedIncidenceWorkspace → CoreDomainBoundary` (pure)
+}
+
+/// Authoritative record vocabulary and append-only log API.
+pub mod authoritative_log {
+    pub use crate::ledger::{
+        AuthoritativeLog, Genesis, LogDigest, LogError, Record, RunCompleted, RunId, Transfer,
+        TransferEndpoint,
+    };
+}
+
+/// Deterministic authoritative-log folding and completeness inspection.
+pub mod replay {
+    pub use crate::ledger::{
+        CompletenessReader, ConservationTotals, Replay, ReplayError, RunStatus, StockState,
+        incidence_column, incidence_columns_close, replay_with_artifact,
+    };
 }
