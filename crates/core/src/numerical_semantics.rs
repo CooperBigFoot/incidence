@@ -1,9 +1,11 @@
 //! scalar_semantics : NumericalSemanticsVersion × OrderedBinary64Operation → FiniteCanonicalBinary64 ⊎ NumericalSemanticsError   (pure, input-ordered)
 
 use crate::non_negative_amount::{NonNegativeAmount, NonNegativeAmountError};
+use serde::{Deserialize, Serialize};
 
 /// A caller-selected version of the numerical semantics.
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NumericalSemanticsVersion {
     /// Literal authoritative-order binary64 semantics.
     V1,
