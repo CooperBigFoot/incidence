@@ -1,4 +1,5 @@
-//! compartment_identity : str ⇀ CompartmentId; substance_identity : str ⇀ SubstanceId.
+//! canonical_identity_grammar : str ⇀ CanonicalIdentityText   (pure)
+//! compartment_identity : str ⇀ CompartmentId; substance_identity : str ⇀ SubstanceId   (pure)
 
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
@@ -46,15 +47,36 @@ pub enum IdentityError {
     },
 }
 
-fn validated_identity(value: &str, kind: IdentityKind) -> Result<String, IdentityError> {
+pub(crate) struct CanonicalIdentityText(String);
+
+impl CanonicalIdentityText {
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
+}
+
+pub(crate) enum IdentityGrammarError {
+    Empty,
+    InvalidStart {
+        value: String,
+    },
+    InvalidCharacter {
+        value: String,
+        byte_index: usize,
+        character: char,
+    },
+}
+
+pub(crate) fn parse_canonical_identity(
+    value: &str,
+) -> Result<CanonicalIdentityText, IdentityGrammarError> {
     let mut characters = value.char_indices();
     let Some((_, first)) = characters.next() else {
-        return Err(IdentityError::Empty { kind });
+        return Err(IdentityGrammarError::Empty);
     };
 
     if !first.is_ascii_lowercase() {
-        return Err(IdentityError::InvalidStart {
-            kind,
+        return Err(IdentityGrammarError::InvalidStart {
             value: value.to_owned(),
         });
     }
@@ -64,8 +86,7 @@ fn validated_identity(value: &str, kind: IdentityKind) -> Result<String, Identit
             || character.is_ascii_digit()
             || matches!(character, '-' | '_'))
         {
-            return Err(IdentityError::InvalidCharacter {
-                kind,
+            return Err(IdentityGrammarError::InvalidCharacter {
                 value: value.to_owned(),
                 byte_index,
                 character,
@@ -73,7 +94,28 @@ fn validated_identity(value: &str, kind: IdentityKind) -> Result<String, Identit
         }
     }
 
-    Ok(value.to_owned())
+    Ok(CanonicalIdentityText(value.to_owned()))
+}
+
+fn parse_identity(value: &str, kind: IdentityKind) -> Result<String, IdentityError> {
+    parse_canonical_identity(value)
+        .map(CanonicalIdentityText::into_string)
+        .map_err(|error| match error {
+            IdentityGrammarError::Empty => IdentityError::Empty { kind },
+            IdentityGrammarError::InvalidStart { value } => {
+                IdentityError::InvalidStart { kind, value }
+            }
+            IdentityGrammarError::InvalidCharacter {
+                value,
+                byte_index,
+                character,
+            } => IdentityError::InvalidCharacter {
+                kind,
+                value,
+                byte_index,
+                character,
+            },
+        })
 }
 
 /// A validated compartment identity.
@@ -87,7 +129,7 @@ impl CompartmentId {
     ///
     /// Returns [`IdentityError`] when `value` is empty or contains a byte outside the grammar.
     pub fn parse(value: &str) -> Result<Self, IdentityError> {
-        validated_identity(value, IdentityKind::Compartment).map(Self)
+        parse_identity(value, IdentityKind::Compartment).map(Self)
     }
 
     /// Returns the identity text exactly as supplied at construction.
@@ -135,7 +177,7 @@ impl SubstanceId {
     ///
     /// Returns [`IdentityError`] when `value` is empty or contains a byte outside the grammar.
     pub fn parse(value: &str) -> Result<Self, IdentityError> {
-        validated_identity(value, IdentityKind::Substance).map(Self)
+        parse_identity(value, IdentityKind::Substance).map(Self)
     }
 
     /// Returns the identity text exactly as supplied at construction.
