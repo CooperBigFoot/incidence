@@ -4,7 +4,9 @@ use incidence_core::endpoints::FiniteCompartment;
 use incidence_core::forcing::ForcingSeries;
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
-use incidence_core::model_artifact::{ModelArtifact, ModelArtifactArchive, ModelVersions, UnitId};
+use incidence_core::model_artifact::{
+    ModelArtifact, ModelArtifactArchive, ModelVersions, Quantum, SubstanceUnit, UnitId,
+};
 use incidence_core::numerical_semantics::NumericalSemanticsVersion;
 use incidence_core::projection::ProjectionSet;
 use incidence_core::rule_reference::ForcingId;
@@ -47,7 +49,10 @@ fn fixture(value: f64, numerical: NumericalSemanticsVersion) -> ModelArtifact {
         .with_forcings(vec![forcing])
         .with_units(vec![(
             water,
-            UnitId::parse("m3").expect("fixture unit is valid"),
+            SubstanceUnit::new(
+                UnitId::parse("m3").expect("fixture unit is valid"),
+                Quantum::try_from(1.0e-6).expect("valid quantum"),
+            ),
         )])
         .with_versions(ModelVersions::new(
             RuleIrVersion::V1,

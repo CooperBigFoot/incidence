@@ -6,7 +6,9 @@ use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{
     AuthoritativeLog, CompletenessReader, Genesis, Record, ReplayError, RunId, RunStatus, Transfer,
 };
-use incidence_core::model_artifact::{ModelArtifact, ModelArtifactArchive, UnitId};
+use incidence_core::model_artifact::{
+    ModelArtifact, ModelArtifactArchive, Quantum, SubstanceUnit, UnitId,
+};
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::presence::ValueState;
 use incidence_core::projection::ProjectionSet;
@@ -61,9 +63,21 @@ pub(crate) fn fixture(salt: bool, forcing_stock: f64) -> ModelArtifact {
         CalendarOrigin::new(CalendarInstant::from_unix_seconds(0)),
         TimestepDuration::from_seconds(1).expect("duration"),
     );
-    let mut units = vec![(water, UnitId::parse("kg").expect("unit"))];
+    let mut units = vec![(
+        water,
+        SubstanceUnit::new(
+            UnitId::parse("kg").expect("unit"),
+            Quantum::try_from(1.0e-6).expect("valid quantum"),
+        ),
+    )];
     if salt {
-        units.push((salt_id, UnitId::parse("kg").expect("unit")));
+        units.push((
+            salt_id,
+            SubstanceUnit::new(
+                UnitId::parse("kg").expect("unit"),
+                Quantum::try_from(1.0e-6).expect("valid quantum"),
+            ),
+        ));
     }
     ModelArtifact::builder(topology, registry, stocks, calendar, horizon)
         .with_projections(ProjectionSet::new(vec![], vec![]).expect("projections"))

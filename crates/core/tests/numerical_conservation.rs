@@ -4,7 +4,7 @@ use incidence_core::endpoints::FiniteCompartment;
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{AuthoritativeLog, RunId, Transfer, replay_with_artifact};
-use incidence_core::model_artifact::{ModelArtifact, UnitId};
+use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::projection::ProjectionSet;
 use incidence_core::sparse_substance_vector::SparseSubstanceVector;
@@ -67,7 +67,10 @@ fn replay_rejects_a_transfer_whose_binary64_updates_do_not_close() {
         .with_projections(ProjectionSet::new(vec![], vec![]).expect("valid projections"))
         .with_units(vec![(
             water.clone(),
-            UnitId::parse("kg").expect("valid unit"),
+            SubstanceUnit::new(
+                UnitId::parse("kg").expect("valid unit"),
+                Quantum::try_from(10.0).expect("valid quantum"),
+            ),
         )])
         .build()
         .expect("valid artifact");

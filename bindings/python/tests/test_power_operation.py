@@ -26,7 +26,7 @@ def _model(expression):
             "destination": "outside",
         }],
         input_bindings=[],
-        units=[{"substance": "water", "unit": "m3"}],
+        units=[{"substance": "water", "unit": "m3", "quantum": 1.0e-6}],
     )
 
 

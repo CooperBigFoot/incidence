@@ -75,7 +75,7 @@ def build_model_document(
         ],
         transfer_bindings=[],
         input_bindings=[],
-        units=[{"substance": "water", "unit": "m3"}],
+        units=[{"substance": "water", "unit": "m3", "quantum": 1.0e-6}],
     )
 
 

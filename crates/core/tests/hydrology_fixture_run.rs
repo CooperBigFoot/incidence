@@ -20,11 +20,11 @@ fn all_seven_hydrology_rules_run_to_completion_in_one_model() {
     assert!(log.is_sealed());
     assert_eq!(
         log.digest().to_hex(),
-        "e2757681d27cde03f15ba2cfd82ccd44613160a57c9e5cc33f96d3853bfdb103"
+        "ab7ea6531e55332f155caf6f685c6551ee86ae1a7d8d749bbe37925137fde82a"
     );
     assert_eq!(
         artifact.digest().to_hex(),
-        "f74f3c68ef7cda21d9ec3dac6ce1c509f3599d1fc5c37de53dccb8a3afeb9139"
+        "e3330d288b2fbc90fad3e5f1eccb18331eeb1b6af235debadba4539dd10485fa"
     );
     replay_with_artifact(&log, &artifact)
         .unwrap_or_else(|error| panic!("completed fixture did not replay: {error}"));

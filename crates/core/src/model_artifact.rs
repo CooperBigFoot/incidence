@@ -124,6 +124,68 @@ impl Display for UnitId {
     }
 }
 
+/// Largest consecutive whole-number count exactly representable by binary64.
+pub const MAX_EXACT_WHOLE_MULTIPLES: f64 = 9_007_199_254_740_992.0;
+
+/// The smallest representable amount for one substance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Quantum(f64);
+
+impl Quantum {
+    /// Returns the positive finite amount represented by one whole quantum.
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.0
+    }
+
+    /// Returns the largest total for which every whole-quantum count remains exact.
+    #[must_use]
+    pub fn countable_ceiling(self) -> f64 {
+        self.0 * MAX_EXACT_WHOLE_MULTIPLES
+    }
+}
+
+impl TryFrom<f64> for Quantum {
+    type Error = ModelArtifactError;
+
+    /// Parses a strictly positive finite quantum and canonicalizes no values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelArtifactError::InvalidQuantum`] when `value` is zero, negative, NaN, or
+    /// infinite.
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(ModelArtifactError::InvalidQuantum { value });
+        }
+        Ok(Self(value))
+    }
+}
+
+/// The display unit and arithmetic quantum declared for one substance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubstanceUnit {
+    unit: UnitId,
+    quantum: Quantum,
+}
+
+impl SubstanceUnit {
+    #[must_use]
+    pub const fn new(unit: UnitId, quantum: Quantum) -> Self {
+        Self { unit, quantum }
+    }
+
+    #[must_use]
+    pub fn unit(&self) -> &UnitId {
+        &self.unit
+    }
+
+    #[must_use]
+    pub const fn quantum(&self) -> Quantum {
+        self.quantum
+    }
+}
+
 /// One executable rule and its immutable scalar parameters.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuleDefinition {
@@ -301,7 +363,7 @@ pub struct ModelArtifact {
     tables: BTreeMap<TableId, InterpolationTable>,
     rules: BTreeMap<(CompartmentId, SubstanceId), RuleDefinition>,
     execution_bindings: ExecutionBindings,
-    units: BTreeMap<SubstanceId, UnitId>,
+    units: BTreeMap<SubstanceId, SubstanceUnit>,
     versions: ModelVersions,
     canonical_bytes: Box<[u8]>,
     digest: ModelDigest,
@@ -404,8 +466,14 @@ impl ModelArtifact {
         self.execution_bindings
             .input_source(compartment, substance, input)
     }
-    pub fn units(&self) -> impl ExactSizeIterator<Item = (&SubstanceId, &UnitId)> {
+    pub fn units(&self) -> impl ExactSizeIterator<Item = (&SubstanceId, &SubstanceUnit)> {
         self.units.iter()
+    }
+
+    /// Returns the declared arithmetic quantum for `substance`, if it is modelled.
+    #[must_use]
+    pub fn quantum(&self, substance: &SubstanceId) -> Option<Quantum> {
+        self.units.get(substance).map(SubstanceUnit::quantum)
     }
 
     /// Derives an artifact by replacing declared rule parameters and recomputing its identity.
@@ -541,7 +609,7 @@ pub struct ModelArtifactBuilder {
     tables: Vec<InterpolationTable>,
     rules: Vec<RuleDefinition>,
     execution_bindings: ExecutionBindings,
-    units: Vec<(SubstanceId, UnitId)>,
+    units: Vec<(SubstanceId, SubstanceUnit)>,
     versions: ModelVersions,
 }
 
@@ -605,7 +673,7 @@ impl ModelArtifactBuilder {
         Ok(self)
     }
     #[must_use]
-    pub fn with_units(mut self, units: Vec<(SubstanceId, UnitId)>) -> Self {
+    pub fn with_units(mut self, units: Vec<(SubstanceId, SubstanceUnit)>) -> Self {
         self.units = units;
         self
     }
@@ -727,9 +795,34 @@ impl ModelArtifactBuilder {
             }
         }
         for substance in self.registry.iter() {
-            if !units.contains_key(substance) {
-                return Err(ModelArtifactError::MissingUnit {
+            let declaration =
+                units
+                    .get(substance)
+                    .ok_or_else(|| ModelArtifactError::MissingUnit {
+                        substance: substance.clone(),
+                    })?;
+            let amounts = self
+                .initial_stocks
+                .iter()
+                .filter_map(|(_, stock)| stock.iter().find(|(id, _)| id == &substance))
+                .map(|(_, amount)| amount.value());
+            let countable_ceiling = declaration.quantum().countable_ceiling();
+            let mut total = 0.0;
+            let mut remaining = countable_ceiling;
+            let mut exceeds_ceiling = false;
+            for amount in amounts {
+                total += amount;
+                if amount > remaining {
+                    exceeds_ceiling = true;
+                } else {
+                    remaining -= amount;
+                }
+            }
+            if !total.is_finite() || exceeds_ceiling {
+                return Err(ModelArtifactError::UncountableInitialTotal {
                     substance: substance.clone(),
+                    total,
+                    countable_ceiling,
                 });
             }
         }
@@ -755,7 +848,7 @@ impl ModelArtifactBuilder {
 }
 
 /// Reports why a complete model artifact could not be constructed.
-#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ModelArtifactError {
     /// Fires when an initial-stock value is bound to a different topology snapshot.
     #[error("initial stocks are bound to a different topology")]
@@ -998,6 +1091,18 @@ pub enum ModelArtifactError {
     /// Fires when a unit identity is empty, non-ASCII, or padded with whitespace.
     #[error("invalid canonical unit identity `{value}`")]
     InvalidUnitIdentity { value: String },
+    /// Fires when a quantum is not strictly positive and finite.
+    #[error("unit quantum must be positive and finite, got {value}")]
+    InvalidQuantum { value: f64 },
+    /// Fires when a substance total has more whole quanta than binary64 can count exactly.
+    #[error(
+        "substance `{substance}` declared total {total} exceeds the exactly countable ceiling {countable_ceiling}"
+    )]
+    UncountableInitialTotal {
+        substance: SubstanceId,
+        total: f64,
+        countable_ceiling: f64,
+    },
     /// Fires when a unit names an unmodelled substance.
     #[error("unit declaration names unmodelled substance `{substance}`")]
     UnknownUnitSubstance { substance: SubstanceId },
@@ -1652,9 +1757,16 @@ impl CanonicalEncode for ModelArtifact {
             }
         }
         writer.write_count(CanonicalField::ArtifactUnits, self.units.len())?;
-        for (substance, unit) in &self.units {
+        for (substance, declaration) in &self.units {
             writer.write_string(CanonicalField::ArtifactUnitSubstance, substance.as_str())?;
-            writer.write_string(CanonicalField::ArtifactUnitIdentity, unit.as_str())?;
+            writer.write_string(
+                CanonicalField::ArtifactUnitIdentity,
+                declaration.unit().as_str(),
+            )?;
+            writer.write_scalar(
+                CanonicalField::ArtifactUnitQuantum,
+                declaration.quantum().value(),
+            )?;
         }
         Ok(())
     }
