@@ -8,6 +8,7 @@ pub mod presence;
 pub mod signed_boundary_balance;
 pub mod substance_registry;
 pub mod temporal;
+pub mod topology;
 
 pub mod workspace {
     //! `workspace_boundary : InitializedIncidenceWorkspace → CoreDomainBoundary` (pure)
