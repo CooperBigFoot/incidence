@@ -1,28 +1,18 @@
-# rustplate
+# incidence
 
-Rust project boilerplate with `tracing`, `anyhow`, and version bumping.
+A substance-agnostic, event-sourced conserved-flow engine for directed compartment networks.
 
-## Quick Start
+## Architecture
 
-```bash
-gh repo create my-project --template CooperBigFoot/rustplate --clone --private
-cd my-project
-bash init.sh my-project
-```
+- `src/main.rs` is the composition root. It alone owns configuration, environment access, path resolution, tracing initialization, and I/O.
+- `crates/core` owns domain logic. It receives typed inputs and has no configuration or I/O authority.
 
 ## Development
 
 ```bash
-cargo build                   # build
-cargo run                     # run
-cargo test                    # test
-cargo clippy                  # lint
-cargo fmt                     # format
-```
-
-## Adding Dependencies
-
-```bash
-cargo add <crate>             # runtime dependency
-cargo add --dev <crate>       # dev dependency
+cargo fmt --all --check
+cargo clippy --workspace --all-targets
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo build --workspace
 ```
