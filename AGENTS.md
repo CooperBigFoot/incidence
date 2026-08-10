@@ -4,7 +4,7 @@ A rule appears in this file only if (a) it encodes a project choice that cannot 
 
 ## 0. Project Overview
 
-DESCRIBE THE PROJECT BRIEFLY
+Incidence is a substance-agnostic, event-sourced conserved-flow engine for directed compartment networks.
 
 ## 1. Workspace Layout and Tooling
 

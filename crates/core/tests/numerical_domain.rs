@@ -1,8 +1,8 @@
 //! Black-box acceptance tests for numerical domain invariants and V1 ordered accumulation.
 
-use myproject_core::non_negative_amount::{NonNegativeAmount, NonNegativeAmountError};
-use myproject_core::numerical_semantics::{AccumulationError, NumericalSemanticsVersion};
-use myproject_core::signed_boundary_balance::{SignedBoundaryBalance, SignedBoundaryBalanceError};
+use incidence_core::non_negative_amount::{NonNegativeAmount, NonNegativeAmountError};
+use incidence_core::numerical_semantics::{AccumulationError, NumericalSemanticsVersion};
+use incidence_core::signed_boundary_balance::{SignedBoundaryBalance, SignedBoundaryBalanceError};
 
 fn parse_amounts(values: &[f64]) -> Vec<NonNegativeAmount> {
     values

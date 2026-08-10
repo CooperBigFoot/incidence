@@ -1,4 +1,4 @@
-use myproject_core::temporal::{
+use incidence_core::temporal::{
     CalendarInstant, CalendarOrigin, FixedStepCalendar, RunHorizon, TemporalError,
     TimestepDuration, TimestepIndex,
 };

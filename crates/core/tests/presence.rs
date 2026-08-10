@@ -1,4 +1,4 @@
-use myproject_core::presence::ValueState;
+use incidence_core::presence::ValueState;
 
 #[test]
 fn numeric_zero_is_present_and_distinct_from_other_states() {
