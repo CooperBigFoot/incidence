@@ -10,12 +10,12 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [package]
-name = "myproject"
+name = "incidence"
 version = "0.1.4"
 edition = "2024"
 
 [dependencies]
-myproject-core = { path = "crates/core" }
+incidence-core = { path = "crates/core" }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
