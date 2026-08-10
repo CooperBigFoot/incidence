@@ -2,12 +2,15 @@
 
 pub mod endpoints;
 pub mod identity;
+pub mod initial_stocks;
 pub mod non_negative_amount;
 pub mod numerical_semantics;
 pub mod presence;
 pub mod signed_boundary_balance;
+pub mod sparse_substance_vector;
 pub mod substance_registry;
 pub mod temporal;
+pub mod topology;
 
 pub mod workspace {
     //! `workspace_boundary : InitializedIncidenceWorkspace → CoreDomainBoundary` (pure)
