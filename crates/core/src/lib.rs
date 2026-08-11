@@ -2,8 +2,10 @@
 
 pub mod canonical_encoding;
 pub mod endpoints;
+pub mod forcing;
 pub mod identity;
 pub mod initial_stocks;
+pub mod interpolation_table;
 pub mod non_negative_amount;
 pub mod numerical_semantics;
 pub mod partition_expression;
