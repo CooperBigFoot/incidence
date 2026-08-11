@@ -26,6 +26,15 @@ pub enum CanonicalField {
     ConnectionTargetIdentity,
     InitialStockEntries,
     InitialStockCompartmentIdentity,
+    RuleInputIdentity,
+    RuleParameterIdentity,
+    RuleForcingIdentity,
+    RuleProjectionIdentity,
+    RuleTableIdentity,
+    RuleLiteral,
+    PartitionBranches,
+    PartitionBranchIdentity,
+    PartitionFraction,
     ScalarProbe,
 }
 
