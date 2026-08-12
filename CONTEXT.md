@@ -31,6 +31,10 @@
 | Expression value kind | The compile/construction-time distinction between a scalar-valued rule expression and a truth-valued predicate. Scalar and truth operands are not interchangeable. |
 | Partition expression | One of five closed, substance- and unit-neutral partition shapes: retain-all, release-all, fixed-fraction split, exogenous series, or constant-fraction transfer. |
 | Rule reference | A validated typed identity naming an opaque current input, immutable parameter, forcing series, deterministic projection, interpolation table, or transfer branch; resolution belongs to the model program and later runtime layers. |
+| Projection specification | One serialisable member of the closed deterministic projection vocabulary: bounded lag, oldest-to-newest rolling sum, or finite recurrence. It declares typed sources and dependencies but carries no evaluator or callable. |
+| Authoritative-fact selector | A closed selector for the incoming or outgoing extensive transfer amount of one registered substance at one compartment and timestep. It reads authoritative Transfers in log order and never creates authority. |
+| Initial projector state | Explicit typed values paired with one projection identity and required in the exact shape dictated by its specification. It is immutable model input; disposable runtime projector state is rebuilt from it and authoritative facts. |
+| Finite recurrence | A deterministic projection whose finite typed state is updated by closed rule-expression trees using only bound current authoritative facts, immutable parameter references, prior state slots, and earlier projection values. |
 
 ## Aliases to avoid
 
@@ -74,9 +78,12 @@
 | Denotation line, Module | Every module states its mathematical object in a one-line `//!` denotation before implementation. |
 | Rule expression, Rule reference, Projection | A rule expression may read a typed projection reference, while the projection specification and rebuildable projector state remain separate and are defined later. |
 | Rule expression, Partition expression, Numerical-semantics version | Both IR trees carry the rule-IR and numerical-semantics versions; expression child order and fraction accumulation order are part of their canonical identity. |
+| Projection specification, Authoritative-fact selector, Authoritative log | A projection specification selects only typed authoritative transfer amounts or earlier deterministic projections; authored specification order is evaluation order. |
+| Projection specification, Initial projector state | Every projection has exactly one initial projector state whose value count and kinds are fixed by the specification. |
+| Finite recurrence, Rule expression, Projection | A finite recurrence stores closed rule-expression update trees; its runtime state is non-authoritative and may be rebuilt from initial projector state plus authoritative facts. |
 
 ## Ambiguities
 
 | Topic | Current interpretation | Resolution condition |
 |---|---|---|
-| Sufficiency of the closed rule vocabulary | The vocabulary can construct references and combinator shapes needed by the planned sharp fixtures, but adequacy for a real hydrology rule set is not yet demonstrated. | Resolve only when the complete fixture rule set is built and executed against the public IR; inability to express a fixture requires a closed-vocabulary design decision, never an opaque extension. |
+| Sufficiency of the closed rule vocabulary | The vocabulary can construct the Muskingum recurrence shape from public lag, authoritative-fact, parameter, prior-state, and projection references, but the complete fixture rule set has not yet been built or executed. | Resolve only when the complete fixture rule set is built and executed against the public IR; inability to express a fixture requires a closed-vocabulary design decision, never an opaque extension. |

@@ -6,6 +6,7 @@ use crate::canonical_encoding::{
 use crate::numerical_semantics::{NumericalSemanticsVersion, ScalarComparison};
 use crate::rule_reference::{
     ExpressionValueKind, ForcingRef, InputRef, InterpolatedTableRef, ParameterRef, ProjectionRef,
+    ProjectionValueKind,
 };
 use crate::versions::RuleIrVersion;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -476,7 +477,12 @@ impl RuleExpr {
         match self.node {
             RuleNode::Input(ref r) => r.value_kind(),
             RuleNode::Parameter(ref r) => r.value_kind(),
-            RuleNode::Projection(ref r) => r.value_kind(),
+            RuleNode::Projection(ref r) => match r.value_kind() {
+                ProjectionValueKind::Extensive | ProjectionValueKind::Scalar => {
+                    ExpressionValueKind::Scalar
+                }
+                ProjectionValueKind::Truth => ExpressionValueKind::Truth,
+            },
             RuleNode::Comparison { .. } => ExpressionValueKind::Truth,
             RuleNode::Forcing(_)
             | RuleNode::Literal(_)
@@ -544,6 +550,15 @@ impl RuleExpr {
                 RuleExprView::InterpolatedTable { table, input }
             }
         }
+    }
+
+    pub(crate) fn encode_payload_unframed(
+        &self,
+        writer: &mut CanonicalPayloadWriter,
+    ) -> Result<(), CanonicalEncodingError> {
+        writer.write_u16(1);
+        writer.write_u16(1);
+        encode_node(self, writer)
     }
 }
 
@@ -895,7 +910,7 @@ fn encode_node(
         }
         RuleNode::Projection(r) => {
             w.write_u8(0x03);
-            w.write_u8(kind_tag(r.value_kind()));
+            w.write_u8(projection_kind_tag(r.value_kind()));
             w.write_string(CanonicalField::RuleProjectionIdentity, r.id().as_str())?
         }
         RuleNode::Literal(v) => {
@@ -960,6 +975,13 @@ fn kind_tag(k: ExpressionValueKind) -> u8 {
     match k {
         ExpressionValueKind::Scalar => 0,
         ExpressionValueKind::Truth => 1,
+    }
+}
+fn projection_kind_tag(k: ProjectionValueKind) -> u8 {
+    match k {
+        ProjectionValueKind::Scalar => 0,
+        ProjectionValueKind::Truth => 1,
+        ProjectionValueKind::Extensive => 2,
     }
 }
 fn comparison_tag(c: ScalarComparison) -> u8 {

@@ -8,6 +8,7 @@ pub mod non_negative_amount;
 pub mod numerical_semantics;
 pub mod partition_expression;
 pub mod presence;
+pub mod projection;
 pub mod rule_expression;
 pub mod rule_reference;
 pub mod signed_boundary_balance;

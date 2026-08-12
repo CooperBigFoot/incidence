@@ -1,4 +1,4 @@
-//! rule_reference : ValidatedIdentity × ExpressionValueKind → TypedOpaqueRuleReference   (pure)
+//! rule_reference : ValidatedIdentity × TypedReferenceValueKind → TypedOpaqueRuleReference   (pure)
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::{Display, Formatter};
@@ -9,6 +9,14 @@ use crate::identity::{CanonicalIdentityText, IdentityGrammarError, parse_canonic
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExpressionValueKind {
+    Scalar,
+    Truth,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionValueKind {
+    Extensive,
     Scalar,
     Truth,
 }
@@ -146,7 +154,24 @@ macro_rules! kind_reference {
 }
 kind_reference!(InputRef, InputId);
 kind_reference!(ParameterRef, ParameterId);
-kind_reference!(ProjectionRef, ProjectionId);
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionRef {
+    id: ProjectionId,
+    value_kind: ProjectionValueKind,
+}
+impl ProjectionRef {
+    pub fn new(id: ProjectionId, value_kind: ProjectionValueKind) -> Self {
+        Self { id, value_kind }
+    }
+    pub fn id(&self) -> &ProjectionId {
+        &self.id
+    }
+    pub fn value_kind(&self) -> ProjectionValueKind {
+        self.value_kind
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]

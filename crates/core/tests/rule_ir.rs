@@ -10,8 +10,8 @@ use incidence_core::rule_expression::{
 };
 use incidence_core::rule_reference::{
     ExpressionValueKind, ForcingId, ForcingRef, InputId, InputRef, InterpolatedTableRef,
-    ParameterId, ParameterRef, ProjectionId, ProjectionRef, RuleReferenceIdentityError,
-    RuleReferenceKind, TableId, TransferBranchId,
+    ParameterId, ParameterRef, ProjectionId, ProjectionRef, ProjectionValueKind,
+    RuleReferenceIdentityError, RuleReferenceKind, TableId, TransferBranchId,
 };
 use incidence_core::versions::{CanonicalEncodingVersion, RuleIrVersion};
 
@@ -756,13 +756,13 @@ fn views_expose_every_node_and_child_position_faithfully() {
     match RuleExpr::projection(
         R,
         S,
-        ProjectionRef::new(projection_id("projection-a"), ExpressionValueKind::Scalar),
+        ProjectionRef::new(projection_id("projection-a"), ProjectionValueKind::Scalar),
     )
     .view()
     {
         RuleExprView::Projection(reference) => {
             assert_eq!(reference.id().as_str(), "projection-a");
-            assert_eq!(reference.value_kind(), ExpressionValueKind::Scalar);
+            assert_eq!(reference.value_kind(), ProjectionValueKind::Scalar);
         }
         _ => panic!("expected a projection view"),
     }
@@ -930,7 +930,7 @@ fn representative_rule() -> RuleExpr {
         S,
         ProjectionRef::new(
             projection_id("projection-lag-a"),
-            ExpressionValueKind::Scalar,
+            ProjectionValueKind::Scalar,
         ),
     );
     let condition =
@@ -1116,7 +1116,7 @@ fn truth_valued_parameter_and_projection_expressions_report_truth() {
     let truth_projection = RuleExpr::projection(
         R,
         S,
-        ProjectionRef::new(projection_id("projection-a"), ExpressionValueKind::Truth),
+        ProjectionRef::new(projection_id("projection-a"), ProjectionValueKind::Truth),
     );
     assert_eq!(
         RuleExpr::add(truth_parameter.clone(), literal(1.25)),
@@ -1138,6 +1138,49 @@ fn truth_valued_parameter_and_projection_expressions_report_truth() {
     );
     assert!(RuleExpr::select(truth_parameter, literal(1.25), literal(2.5)).is_ok());
     assert!(RuleExpr::select(truth_projection, literal(1.25), literal(2.5)).is_ok());
+}
+
+#[test]
+fn projection_reference_kinds_map_exactly_into_expression_kinds() {
+    let extensive = RuleExpr::projection(
+        R,
+        S,
+        ProjectionRef::new(
+            projection_id("projection-extensive"),
+            ProjectionValueKind::Extensive,
+        ),
+    );
+    let scalar = RuleExpr::projection(
+        R,
+        S,
+        ProjectionRef::new(
+            projection_id("projection-scalar"),
+            ProjectionValueKind::Scalar,
+        ),
+    );
+    let truth = RuleExpr::projection(
+        R,
+        S,
+        ProjectionRef::new(
+            projection_id("projection-truth"),
+            ProjectionValueKind::Truth,
+        ),
+    );
+    assert_eq!(extensive.value_kind(), ExpressionValueKind::Scalar);
+    assert_eq!(scalar.value_kind(), ExpressionValueKind::Scalar);
+    assert_eq!(truth.value_kind(), ExpressionValueKind::Truth);
+    assert!(RuleExpr::add(extensive, literal(1.25)).is_ok());
+    assert!(RuleExpr::add(scalar, literal(2.5)).is_ok());
+    assert_eq!(
+        RuleExpr::add(truth.clone(), literal(3.75)),
+        Err(incompatible(
+            RuleExprOperation::Add,
+            RuleExprOperand::Left,
+            ExpressionValueKind::Scalar,
+            ExpressionValueKind::Truth,
+        ))
+    );
+    assert!(RuleExpr::select(truth, literal(1.25), literal(2.5)).is_ok());
 }
 
 #[test]

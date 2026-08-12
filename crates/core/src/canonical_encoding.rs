@@ -2,6 +2,11 @@
 
 use crate::initial_stocks::InitialStocks;
 use crate::numerical_semantics::NumericalSemanticsVersion;
+use crate::projection::{
+    AuthoritativeFactSelector, InitialProjectorState, ProjectionSource, ProjectionSpec,
+    ProjectionSpecView, ProjectionValue, RecurrenceInputSource, RollingAggregate,
+};
+use crate::rule_reference::{ExpressionValueKind, ProjectionValueKind};
 use crate::sparse_substance_vector::SparseSubstanceVector;
 use crate::substance_registry::SubstanceRegistry;
 use crate::temporal::{FixedStepCalendar, RunHorizon};
@@ -35,6 +40,15 @@ pub enum CanonicalField {
     PartitionBranches,
     PartitionBranchIdentity,
     PartitionFraction,
+    ProjectionIdentity,
+    FactCompartmentIdentity,
+    FactSubstanceIdentity,
+    ProjectionReferenceIdentity,
+    ProjectionCount,
+    ProjectionInputIdentity,
+    ProjectionParameterIdentity,
+    ProjectorStateValues,
+    ProjectorStateValue,
     ScalarProbe,
 }
 
@@ -333,6 +347,157 @@ impl CanonicalEncode for RunHorizon {
     ) -> Result<(), CanonicalEncodingError> {
         writer.write_u64(self.first().value());
         writer.write_u64(self.last().value());
+        Ok(())
+    }
+}
+
+fn projection_kind_tag(kind: ProjectionValueKind) -> u8 {
+    match kind {
+        ProjectionValueKind::Extensive => 0,
+        ProjectionValueKind::Scalar => 1,
+        ProjectionValueKind::Truth => 2,
+    }
+}
+
+fn expression_kind_tag(kind: ExpressionValueKind) -> u8 {
+    match kind {
+        ExpressionValueKind::Scalar => 0,
+        ExpressionValueKind::Truth => 1,
+    }
+}
+
+fn encode_selector(
+    selector: &AuthoritativeFactSelector,
+    writer: &mut CanonicalPayloadWriter,
+) -> Result<(), CanonicalEncodingError> {
+    writer.write_u8(match selector {
+        AuthoritativeFactSelector::IncomingTransferAmount { .. } => 0,
+        AuthoritativeFactSelector::OutgoingTransferAmount { .. } => 1,
+    });
+    writer.write_string(
+        CanonicalField::FactCompartmentIdentity,
+        selector.compartment().as_str(),
+    )?;
+    writer.write_string(
+        CanonicalField::FactSubstanceIdentity,
+        selector.substance().as_str(),
+    )
+}
+
+fn encode_projection_source(
+    source: &ProjectionSource,
+    writer: &mut CanonicalPayloadWriter,
+) -> Result<(), CanonicalEncodingError> {
+    match source {
+        ProjectionSource::AuthoritativeFact(selector) => {
+            writer.write_u8(0);
+            encode_selector(selector, writer)
+        }
+        ProjectionSource::Projection(reference) => {
+            writer.write_u8(1);
+            writer.write_u8(projection_kind_tag(reference.value_kind()));
+            writer.write_string(
+                CanonicalField::ProjectionReferenceIdentity,
+                reference.id().as_str(),
+            )
+        }
+    }
+}
+
+impl CanonicalEncode for ProjectionSpec {
+    fn root_tag(&self) -> u16 {
+        0x0018
+    }
+
+    fn encode_payload(
+        &self,
+        writer: &mut CanonicalPayloadWriter,
+    ) -> Result<(), CanonicalEncodingError> {
+        writer.write_u16(1);
+        writer.write_u16(1);
+        writer.write_string(CanonicalField::ProjectionIdentity, self.id().as_str())?;
+        writer.write_u8(projection_kind_tag(self.value_kind()));
+        match self.view() {
+            ProjectionSpecView::BoundedLag(spec) => {
+                writer.write_u8(0);
+                encode_projection_source(spec.source(), writer)?;
+                writer.write_count(CanonicalField::ProjectionCount, spec.steps())?;
+            }
+            ProjectionSpecView::OrderedRollingAggregate(spec) => {
+                writer.write_u8(1);
+                encode_projection_source(spec.source(), writer)?;
+                writer.write_count(CanonicalField::ProjectionCount, spec.window())?;
+                writer.write_u8(match spec.aggregate() {
+                    RollingAggregate::SumOldestToNewest => 0,
+                });
+            }
+            ProjectionSpecView::FiniteRecurrence(spec) => {
+                writer.write_u8(2);
+                writer.write_count(CanonicalField::ProjectionCount, spec.state_kinds().len())?;
+                for kind in spec.state_kinds() {
+                    writer.write_u8(projection_kind_tag(*kind));
+                }
+                writer.write_count(CanonicalField::ProjectionCount, spec.inputs().len())?;
+                for binding in spec.inputs() {
+                    writer.write_u8(expression_kind_tag(binding.reference().value_kind()));
+                    writer.write_string(
+                        CanonicalField::ProjectionInputIdentity,
+                        binding.reference().id().as_str(),
+                    )?;
+                    match binding.input_source() {
+                        RecurrenceInputSource::AuthoritativeFact(selector) => {
+                            writer.write_u8(0);
+                            encode_selector(selector, writer)?;
+                        }
+                        RecurrenceInputSource::PreviousState { index, value_kind } => {
+                            writer.write_u8(1);
+                            writer.write_count(CanonicalField::ProjectionCount, *index)?;
+                            writer.write_u8(projection_kind_tag(*value_kind));
+                        }
+                    }
+                }
+                writer.write_count(CanonicalField::ProjectionCount, spec.parameters().len())?;
+                for parameter in spec.parameters() {
+                    writer.write_u8(expression_kind_tag(parameter.value_kind()));
+                    writer.write_string(
+                        CanonicalField::ProjectionParameterIdentity,
+                        parameter.id().as_str(),
+                    )?;
+                }
+                writer.write_count(CanonicalField::ProjectionCount, spec.updates().len())?;
+                for update in spec.updates() {
+                    update.encode_payload_unframed(writer)?;
+                }
+                writer.write_count(CanonicalField::ProjectionCount, spec.output_index())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CanonicalEncode for InitialProjectorState {
+    fn root_tag(&self) -> u16 {
+        0x0019
+    }
+
+    fn encode_payload(
+        &self,
+        writer: &mut CanonicalPayloadWriter,
+    ) -> Result<(), CanonicalEncodingError> {
+        writer.write_string(
+            CanonicalField::ProjectionIdentity,
+            self.projection().as_str(),
+        )?;
+        writer.write_count(CanonicalField::ProjectorStateValues, self.values().len())?;
+        for value in self.values() {
+            writer.write_u8(projection_kind_tag(value.value_kind()));
+            match value {
+                ProjectionValue::Extensive(number) | ProjectionValue::Scalar(number) => {
+                    writer.write_scalar(CanonicalField::ProjectorStateValue, number.value())?;
+                }
+                ProjectionValue::Truth(value) => writer.write_u8(u8::from(*value)),
+            }
+        }
         Ok(())
     }
 }
