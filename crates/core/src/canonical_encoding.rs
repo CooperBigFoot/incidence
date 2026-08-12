@@ -50,6 +50,13 @@ pub enum CanonicalField {
     ProjectorStateValues,
     ProjectorStateValue,
     ScalarProbe,
+    ForcingSeriesIdentity,
+    ForcingSeriesValues,
+    ForcingSeriesValue,
+    InterpolationTableIdentity,
+    InterpolationTablePoints,
+    InterpolationTableAbscissa,
+    InterpolationTableOrdinate,
 }
 
 /// A checked failure to produce canonical bytes.
