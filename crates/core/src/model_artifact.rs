@@ -741,6 +741,13 @@ pub enum ModelArtifactError {
         substance: SubstanceId,
         branch: TransferBranchId,
     },
+    /// Fires when transfer bindings introduce a cycle into the execution graph.
+    #[error(
+        "transfer bindings make the execution graph cyclic; blocked compartments: {blocked_compartments:?}"
+    )]
+    CyclicExecutionBindings {
+        blocked_compartments: Vec<CompartmentId>,
+    },
     /// Fires when a generic input leaf has no declared source.
     #[error(
         "rule for compartment `{compartment}`, substance `{substance}` has unbound input `{input}`"
@@ -981,7 +988,75 @@ fn validate_execution_bindings(
             });
         }
     }
-    Ok(())
+    validate_execution_graph_is_acyclic(bindings, topology)
+}
+
+fn validate_execution_graph_is_acyclic(
+    bindings: &ExecutionBindings,
+    topology: &Topology,
+) -> Result<(), ModelArtifactError> {
+    let mut edges = topology
+        .connections()
+        .iter()
+        .map(|connection| (connection.source().clone(), connection.target().clone()))
+        .collect::<BTreeSet<_>>();
+    edges.extend(
+        bindings
+            .transfer_bindings()
+            .map(|binding| (binding.compartment().clone(), binding.destination().clone())),
+    );
+
+    let mut indegrees = topology
+        .endpoints()
+        .map(|endpoint| (endpoint.id().clone(), 0_usize))
+        .collect::<BTreeMap<_, _>>();
+    let mut adjacency = topology
+        .endpoints()
+        .map(|endpoint| (endpoint.id().clone(), BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    for (source, target) in edges {
+        let Some(targets) = adjacency.get_mut(&source) else {
+            unreachable!("validated transfer source must be a declared endpoint");
+        };
+        targets.insert(target.clone());
+        let Some(indegree) = indegrees.get_mut(&target) else {
+            unreachable!("validated transfer destination must be a declared endpoint");
+        };
+        *indegree += 1;
+    }
+
+    let mut ready = indegrees
+        .iter()
+        .filter(|(_, indegree)| **indegree == 0)
+        .map(|(compartment, _)| compartment.clone())
+        .collect::<BTreeSet<_>>();
+    while let Some(compartment) = ready.pop_first() {
+        let Some(targets) = adjacency.get(&compartment) else {
+            unreachable!("declared endpoint must have an adjacency entry");
+        };
+        for target in targets {
+            let Some(indegree) = indegrees.get_mut(target) else {
+                unreachable!("validated transfer destination must have an indegree entry");
+            };
+            *indegree -= 1;
+            if *indegree == 0 {
+                ready.insert(target.clone());
+            }
+        }
+    }
+
+    let blocked_compartments = indegrees
+        .into_iter()
+        .filter(|(_, indegree)| *indegree != 0)
+        .map(|(compartment, _)| compartment)
+        .collect::<Vec<_>>();
+    if blocked_compartments.is_empty() {
+        Ok(())
+    } else {
+        Err(ModelArtifactError::CyclicExecutionBindings {
+            blocked_compartments,
+        })
+    }
 }
 
 fn partition_branches(disposition: &PartitionExpr) -> BTreeSet<TransferBranchId> {
