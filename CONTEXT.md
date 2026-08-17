@@ -27,6 +27,14 @@
 | Domain type | A newtype, struct, or enum encoding a domain concept whose confusion or invalid state must fail to compile. Raw inputs are converted to domain types at the composition root, and no raw primitive crosses into a library crate where a domain type exists. |
 | Isolation point | The single named place in a batch loop over independent items where one item's failure may be caught, recorded with its cause, and skipped. Every other error propagates. |
 | Non-obviousness criterion | The admission test for a rule in `AGENTS.md`: include it only when it is an arbitrary project choice that cannot be inferred from the code, or a practice that default model output violates; omit mechanically enforced or already-default practice. |
+| Rule expression | A versioned, serialisable, closed tree of typed neutral references, finite literals, ordered scalar operations, comparisons, and conditional selection. It is immutable data and carries no evaluator or private authority. |
+| Expression value kind | The compile/construction-time distinction between a scalar-valued rule expression and a truth-valued predicate. Scalar and truth operands are not interchangeable. |
+| Partition expression | One of five closed, substance- and unit-neutral partition shapes: retain-all, release-all, fixed-fraction split, exogenous series, or constant-fraction transfer. |
+| Rule reference | A validated typed identity naming an opaque current input, immutable parameter, forcing series, deterministic projection, interpolation table, or transfer branch; resolution belongs to the model program and later runtime layers. |
+| Projection specification | One serialisable member of the closed deterministic projection vocabulary: bounded lag, oldest-to-newest rolling sum, or finite recurrence. It declares typed sources and dependencies but carries no evaluator or callable. |
+| Authoritative-fact selector | A closed selector for the incoming or outgoing extensive transfer amount of one registered substance at one compartment and timestep. It reads authoritative Transfers in log order and never creates authority. |
+| Initial projector state | Explicit typed values paired with one projection identity and required in the exact shape dictated by its specification. It is immutable model input; disposable runtime projector state is rebuilt from it and authoritative facts. |
+| Finite recurrence | A deterministic projection whose finite typed state is updated by closed rule-expression trees using only bound current authoritative facts, immutable parameter references, prior state slots, and earlier projection values. |
 
 ## Aliases to avoid
 
@@ -68,8 +76,14 @@
 | Finite compartment, Boundary account | They are disjoint endpoint kinds expressed by structural types, never by a boolean flag or a name convention. |
 | Composition root, Domain type | The composition root converts raw input into domain types once and passes only the narrow domain values required by library code. |
 | Denotation line, Module | Every module states its mathematical object in a one-line `//!` denotation before implementation. |
+| Rule expression, Rule reference, Projection | A rule expression may read a typed projection reference, while the projection specification and rebuildable projector state remain separate and are defined later. |
+| Rule expression, Partition expression, Numerical-semantics version | Both IR trees carry the rule-IR and numerical-semantics versions; expression child order and fraction accumulation order are part of their canonical identity. |
+| Projection specification, Authoritative-fact selector, Authoritative log | A projection specification selects only typed authoritative transfer amounts or earlier deterministic projections; authored specification order is evaluation order. |
+| Projection specification, Initial projector state | Every projection has exactly one initial projector state whose value count and kinds are fixed by the specification. |
+| Finite recurrence, Rule expression, Projection | A finite recurrence stores closed rule-expression update trees; its runtime state is non-authoritative and may be rebuilt from initial projector state plus authoritative facts. |
 
 ## Ambiguities
 
 | Topic | Current interpretation | Resolution condition |
 |---|---|---|
+| Sufficiency of the closed rule vocabulary | The complete hydrology fixture rule set is constructible and validates against the public closed IR; execution remains unproved. | Resolve execution adequacy only when the complete fixture set runs to completion against the interpreter; inability to execute a fixture requires a closed-vocabulary design decision, never an opaque extension. |

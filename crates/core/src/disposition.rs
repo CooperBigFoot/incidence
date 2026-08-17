@@ -1,0 +1,511 @@
+//! validated_transaction : ModelArtifact × AuthoritativeLog × Disposition ⇀ AuthoritativeLog   (deterministic, atomic)
+//!
+//! A disposition explicitly partitions every registered substance held by one finite
+//! compartment into a retained amount and outgoing transfers. Validation is performed against
+//! the authoritative fold and the log is replaced only after every generated transfer replays.
+//! Substance entries commit in registry order; allocations retain their authored order.
+
+use std::collections::BTreeMap;
+
+use crate::endpoints::FiniteCompartment;
+use crate::identity::{CompartmentId, SubstanceId};
+use crate::ledger::{
+    AuthoritativeLog, LogError, ReplayError, Transfer, TransferEndpoint, replay_with_artifact,
+};
+use crate::model_artifact::ModelArtifact;
+use crate::non_negative_amount::NonNegativeAmount;
+use crate::presence::ValueState;
+use crate::sparse_substance_vector::{SparseSubstanceVector, SparseSubstanceVectorError};
+use crate::temporal::TimestepIndex;
+use crate::topology::TopologyEndpoint;
+
+/// One explicitly authored destination and amount in a substance partition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Allocation {
+    target: TransferEndpoint,
+    amount: NonNegativeAmount,
+}
+
+impl Allocation {
+    #[must_use]
+    pub fn new(target: impl Into<TransferEndpoint>, amount: NonNegativeAmount) -> Self {
+        Self {
+            target: target.into(),
+            amount,
+        }
+    }
+
+    #[must_use]
+    pub fn target(&self) -> &TransferEndpoint {
+        &self.target
+    }
+
+    #[must_use]
+    pub const fn amount(&self) -> NonNegativeAmount {
+        self.amount
+    }
+}
+
+/// An explicit partition of one substance into retained and transferred amounts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubstanceDisposition {
+    substance: SubstanceId,
+    retained: NonNegativeAmount,
+    allocations: Vec<Allocation>,
+}
+
+impl SubstanceDisposition {
+    #[must_use]
+    pub fn new(
+        substance: SubstanceId,
+        retained: NonNegativeAmount,
+        allocations: impl IntoIterator<Item = Allocation>,
+    ) -> Self {
+        Self {
+            substance,
+            retained,
+            allocations: allocations.into_iter().collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn substance(&self) -> &SubstanceId {
+        &self.substance
+    }
+
+    #[must_use]
+    pub const fn retained(&self) -> NonNegativeAmount {
+        self.retained
+    }
+
+    #[must_use]
+    pub fn allocations(&self) -> &[Allocation] {
+        &self.allocations
+    }
+}
+
+/// A rule's complete, explicitly authored disposition for one finite compartment and timestep.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Disposition {
+    timestep: TimestepIndex,
+    source: FiniteCompartment,
+    substances: Vec<SubstanceDisposition>,
+}
+
+impl Disposition {
+    #[must_use]
+    pub fn new(
+        timestep: TimestepIndex,
+        source: FiniteCompartment,
+        substances: impl IntoIterator<Item = SubstanceDisposition>,
+    ) -> Self {
+        Self {
+            timestep,
+            source,
+            substances: substances.into_iter().collect(),
+        }
+    }
+
+    #[must_use]
+    pub const fn timestep(&self) -> TimestepIndex {
+        self.timestep
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &FiniteCompartment {
+        &self.source
+    }
+
+    #[must_use]
+    pub fn substances(&self) -> &[SubstanceDisposition] {
+        &self.substances
+    }
+}
+
+/// The only write boundary for evaluated rule dispositions.
+pub enum ValidatedTransaction {}
+
+impl ValidatedTransaction {
+    /// Validates an exhaustive disposition and atomically appends its derived transfers.
+    ///
+    /// The supplied log is unchanged on every error. Retention must be authored explicitly;
+    /// it is never inferred by subtracting emitted amounts from available stock.
+    ///
+    /// # Errors
+    /// Returns [`TransactionError`] for an incomplete or invalid partition, an incompatible
+    /// authoritative prefix, or a transfer rejected by the authoritative fold.
+    pub fn commit(
+        log: &mut AuthoritativeLog,
+        artifact: &ModelArtifact,
+        disposition: Disposition,
+    ) -> Result<(), TransactionError> {
+        commit_disposition(log, artifact, disposition)
+    }
+}
+
+/// Validates an exhaustive disposition and atomically appends its derived transfers.
+///
+/// # Errors
+/// Returns [`TransactionError`] without changing `log` when any validation fails.
+pub fn commit_disposition(
+    log: &mut AuthoritativeLog,
+    artifact: &ModelArtifact,
+    disposition: Disposition,
+) -> Result<(), TransactionError> {
+    let before = replay_with_artifact(log, artifact)
+        .map_err(|source| TransactionError::Replay { source })?;
+    validate_transaction_context(log, artifact, &disposition)?;
+    let compartment = disposition.source.id().clone();
+    let timestep = disposition.timestep;
+
+    let mut authored = BTreeMap::new();
+    for entry in &disposition.substances {
+        if !artifact.registry().contains(&entry.substance) {
+            return Err(TransactionError::UnregisteredSubstance {
+                compartment,
+                substance: entry.substance.clone(),
+                timestep,
+            });
+        }
+        if authored.insert(entry.substance.clone(), entry).is_some() {
+            return Err(TransactionError::DuplicateSubstance {
+                compartment,
+                substance: entry.substance.clone(),
+                timestep,
+            });
+        }
+    }
+
+    let semantics = artifact.versions().numerical_semantics();
+    let mut transfers = Vec::new();
+    for substance in artifact.registry().iter() {
+        let entry =
+            authored
+                .get(substance)
+                .copied()
+                .ok_or_else(|| TransactionError::OmittedSubstance {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    timestep,
+                })?;
+        let available = match before.final_state().finite_stock(&compartment, substance) {
+            ValueState::Present(amount) => amount,
+            ValueState::Absent | ValueState::NotModelled => {
+                return Err(TransactionError::StockUnavailable {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    timestep,
+                });
+            }
+        };
+
+        let mut partitioned = entry.retained.value();
+        let mut source_remaining = available.value();
+        for allocation in &entry.allocations {
+            partitioned = semantics
+                .add(partitioned, allocation.amount.value())
+                .map_err(|_| TransactionError::NonFinitePartition {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    timestep,
+                })?;
+            if allocation.amount.value().to_bits() != 0 {
+                if allocation.amount.value() <= source_remaining {
+                    let debited = semantics
+                        .subtract(source_remaining, allocation.amount.value())
+                        .map_err(|_| TransactionError::NonFinitePartition {
+                            compartment: compartment.clone(),
+                            substance: substance.clone(),
+                            timestep,
+                        })?;
+                    if debited.to_bits() == source_remaining.to_bits() {
+                        return Err(TransactionError::IneffectiveDebit {
+                            compartment: compartment.clone(),
+                            substance: substance.clone(),
+                            timestep,
+                            stock_bits: source_remaining.to_bits(),
+                            amount_bits: allocation.amount.value().to_bits(),
+                        });
+                    }
+                    source_remaining = debited;
+                }
+                let amounts = SparseSubstanceVector::new(
+                    artifact.registry(),
+                    [(substance.clone(), allocation.amount)],
+                )
+                .map_err(|source| TransactionError::TransferAmounts {
+                    compartment: compartment.clone(),
+                    timestep,
+                    source,
+                })?;
+                transfers.push(Transfer::new(
+                    timestep,
+                    disposition.source.clone(),
+                    allocation.target.clone(),
+                    amounts,
+                ));
+            }
+        }
+
+        if partitioned > available.value() {
+            return Err(TransactionError::Overdraw {
+                compartment: compartment.clone(),
+                substance: substance.clone(),
+                timestep,
+                available_bits: available.value().to_bits(),
+                requested_bits: partitioned.to_bits(),
+            });
+        }
+        if partitioned.to_bits() != available.value().to_bits() {
+            return Err(TransactionError::IncompletePartition {
+                compartment: compartment.clone(),
+                substance: substance.clone(),
+                timestep,
+                available_bits: available.value().to_bits(),
+                partitioned_bits: partitioned.to_bits(),
+            });
+        }
+    }
+
+    let mut staged = log.clone();
+    for transfer in transfers {
+        staged
+            .append(transfer)
+            .map_err(|source| TransactionError::Log { source })?;
+    }
+
+    let after = replay_with_artifact(&staged, artifact)
+        .map_err(|source| TransactionError::Replay { source })?;
+    for (substance, entry) in authored {
+        match after.final_state().finite_stock(&compartment, &substance) {
+            ValueState::Present(actual)
+                if actual.value().to_bits() == entry.retained.value().to_bits() => {}
+            ValueState::Present(actual) => {
+                return Err(TransactionError::RetainedMismatch {
+                    compartment: compartment.clone(),
+                    substance,
+                    timestep,
+                    declared_bits: entry.retained.value().to_bits(),
+                    actual_bits: actual.value().to_bits(),
+                });
+            }
+            ValueState::Absent | ValueState::NotModelled => {
+                return Err(TransactionError::StockUnavailable {
+                    compartment: compartment.clone(),
+                    substance,
+                    timestep,
+                });
+            }
+        }
+    }
+    *log = staged;
+    Ok(())
+}
+
+fn validate_transaction_context(
+    log: &AuthoritativeLog,
+    artifact: &ModelArtifact,
+    disposition: &Disposition,
+) -> Result<(), TransactionError> {
+    let timestep = disposition.timestep;
+    if log.is_sealed() {
+        return Err(TransactionError::Log {
+            source: LogError::RecordAfterSeal,
+        });
+    }
+    if let Some(previous) = log.transfers().last().map(Transfer::timestep)
+        && timestep < previous
+    {
+        return Err(TransactionError::Log {
+            source: LogError::TimestepOrder {
+                previous,
+                next: timestep,
+            },
+        });
+    }
+    let horizon = artifact.horizon();
+    if !horizon.contains(timestep) {
+        return Err(TransactionError::Replay {
+            source: ReplayError::TimestepOutsideHorizon {
+                timestep,
+                first: horizon.first(),
+                last: horizon.last(),
+            },
+        });
+    }
+    match artifact.topology().endpoint(disposition.source.id()) {
+        None => {
+            return Err(TransactionError::Replay {
+                source: ReplayError::UnknownEndpoint {
+                    compartment: disposition.source.id().clone(),
+                },
+            });
+        }
+        Some(TopologyEndpoint::Boundary(_)) => {
+            return Err(TransactionError::Replay {
+                source: ReplayError::EndpointKindMismatch {
+                    compartment: disposition.source.id().clone(),
+                },
+            });
+        }
+        Some(TopologyEndpoint::Finite(_)) => {}
+    }
+    for allocation in disposition
+        .substances
+        .iter()
+        .flat_map(|entry| &entry.allocations)
+    {
+        let target = &allocation.target;
+        match (target, artifact.topology().endpoint(target.id())) {
+            (_, None) => {
+                return Err(TransactionError::Replay {
+                    source: ReplayError::UnknownEndpoint {
+                        compartment: target.id().clone(),
+                    },
+                });
+            }
+            (TransferEndpoint::Finite(_), Some(TopologyEndpoint::Finite(_)))
+            | (TransferEndpoint::Boundary(_), Some(TopologyEndpoint::Boundary(_))) => {}
+            _ => {
+                return Err(TransactionError::Replay {
+                    source: ReplayError::EndpointKindMismatch {
+                        compartment: target.id().clone(),
+                    },
+                });
+            }
+        }
+        if target.id() == disposition.source.id() {
+            return Err(TransactionError::Replay {
+                source: ReplayError::SelfTransfer {
+                    compartment: target.id().clone(),
+                    timestep,
+                },
+            });
+        }
+        let connected = artifact.topology().connections().iter().any(|connection| {
+            connection.source() == disposition.source.id() && connection.target() == target.id()
+        });
+        if !connected {
+            return Err(TransactionError::Replay {
+                source: ReplayError::UndeclaredConnection {
+                    connection_source: disposition.source.id().clone(),
+                    target: target.id().clone(),
+                    timestep,
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Domain-facing name for failures at the disposition boundary.
+pub type DispositionError = TransactionError;
+
+/// Failures which prevent an evaluated disposition from being committed.
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum TransactionError {
+    /// Fires when no explicit disposition is authored for a registered substance.
+    #[error(
+        "disposition for compartment `{compartment}` omits substance `{substance}` at timestep {timestep:?}"
+    )]
+    OmittedSubstance {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+    },
+    /// Fires when a disposition repeats a substance entry.
+    #[error(
+        "disposition for compartment `{compartment}` repeats substance `{substance}` at timestep {timestep:?}"
+    )]
+    DuplicateSubstance {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+    },
+    /// Fires when a disposition names a substance outside the artifact registry.
+    #[error(
+        "disposition for compartment `{compartment}` names unregistered substance `{substance}` at timestep {timestep:?}"
+    )]
+    UnregisteredSubstance {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+    },
+    /// Fires when a partition disposes more than the source currently holds.
+    #[error(
+        "overdraw of compartment `{compartment}`, substance `{substance}` at timestep {timestep:?}: available bits {available_bits:#018x}, requested bits {requested_bits:#018x}"
+    )]
+    Overdraw {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+        available_bits: u64,
+        requested_bits: u64,
+    },
+    /// Fires when a positive allocation is too small to debit the finite source exactly.
+    #[error(
+        "allocation from compartment `{compartment}`, substance `{substance}` at timestep {timestep:?} cannot debit stock bits {stock_bits:#018x} by amount bits {amount_bits:#018x}"
+    )]
+    IneffectiveDebit {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+        stock_bits: u64,
+        amount_bits: u64,
+    },
+    /// Fires when explicit retention and allocations do not exactly cover available stock.
+    #[error(
+        "incomplete partition for compartment `{compartment}`, substance `{substance}` at timestep {timestep:?}: available bits {available_bits:#018x}, partitioned bits {partitioned_bits:#018x}"
+    )]
+    IncompletePartition {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+        available_bits: u64,
+        partitioned_bits: u64,
+    },
+    /// Fires when deterministic partition accumulation becomes non-finite.
+    #[error(
+        "non-finite partition for compartment `{compartment}`, substance `{substance}` at timestep {timestep:?}"
+    )]
+    NonFinitePartition {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+    },
+    /// Fires when the authoritative fold cannot supply a registered finite stock coordinate.
+    #[error(
+        "stock unavailable for compartment `{compartment}`, substance `{substance}` at timestep {timestep:?}"
+    )]
+    StockUnavailable {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+    },
+    /// Fires when committed fold arithmetic does not reproduce explicitly declared retention.
+    #[error(
+        "retained amount mismatch for compartment `{compartment}`, substance `{substance}` at timestep {timestep:?}: declared bits {declared_bits:#018x}, actual bits {actual_bits:#018x}"
+    )]
+    RetainedMismatch {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+        declared_bits: u64,
+        actual_bits: u64,
+    },
+    /// Fires when generated transfer amounts cannot be represented under the artifact registry.
+    #[error(
+        "cannot construct transfer amounts for compartment `{compartment}` at timestep {timestep:?}: {source}"
+    )]
+    TransferAmounts {
+        compartment: CompartmentId,
+        timestep: TimestepIndex,
+        source: SparseSubstanceVectorError,
+    },
+    /// Fires when the append-only log boundary rejects a generated transfer.
+    #[error(transparent)]
+    Log { source: LogError },
+    /// Fires when the supplied prefix or staged transfers fail authoritative replay.
+    #[error(transparent)]
+    Replay { source: ReplayError },
+}
