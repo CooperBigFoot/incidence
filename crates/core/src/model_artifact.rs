@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 use crate::canonical_encoding::{
     CanonicalEncode, CanonicalEncodingError, CanonicalField, CanonicalPayloadWriter,
 };
+use crate::execution_bindings::{
+    ExecutionBindings, RuleInputBinding, RuleInputSource, TransferBranchBinding,
+};
 use crate::forcing::ForcingSeries;
 use crate::identity::{CompartmentId, SubstanceId};
 use crate::initial_stocks::InitialStocks;
@@ -20,7 +23,10 @@ use crate::numerical_semantics::NumericalSemanticsVersion;
 use crate::partition_expression::{PartitionExpr, PartitionExprView};
 use crate::projection::ProjectionSet;
 use crate::rule_expression::{RuleExpr, RuleExprView};
-use crate::rule_reference::{ForcingId, ParameterId, ProjectionId, TableId};
+use crate::rule_reference::{
+    ExpressionValueKind, ForcingId, InputId, ParameterId, ProjectionId, ProjectionValueKind,
+    TableId, TransferBranchId,
+};
 use crate::substance_registry::SubstanceRegistry;
 use crate::temporal::{FixedStepCalendar, RunHorizon};
 use crate::topology::{Topology, TopologyEndpoint};
@@ -245,6 +251,7 @@ pub struct ModelArtifact {
     forcings: BTreeMap<ForcingId, ForcingSeries>,
     tables: BTreeMap<TableId, InterpolationTable>,
     rules: BTreeMap<(CompartmentId, SubstanceId), RuleDefinition>,
+    execution_bindings: ExecutionBindings,
     units: BTreeMap<SubstanceId, UnitId>,
     versions: ModelVersions,
     canonical_bytes: Box<[u8]>,
@@ -271,6 +278,7 @@ impl ModelArtifact {
             forcings: Vec::new(),
             tables: Vec::new(),
             rules: Vec::new(),
+            execution_bindings: ExecutionBindings::empty(),
             units: Vec::new(),
             versions: ModelVersions::default(),
         }
@@ -321,6 +329,32 @@ impl ModelArtifact {
     pub fn rules(&self) -> impl ExactSizeIterator<Item = &RuleDefinition> {
         self.rules.values()
     }
+    #[must_use]
+    pub fn execution_bindings(&self) -> &ExecutionBindings {
+        &self.execution_bindings
+    }
+    /// Returns the destination for a validated transfer branch.
+    #[must_use]
+    pub fn transfer_destination(
+        &self,
+        compartment: &CompartmentId,
+        substance: &SubstanceId,
+        branch: &TransferBranchId,
+    ) -> Option<&CompartmentId> {
+        self.execution_bindings
+            .destination(compartment, substance, branch)
+    }
+    /// Returns the source for a validated generic rule input.
+    #[must_use]
+    pub fn rule_input_source(
+        &self,
+        compartment: &CompartmentId,
+        substance: &SubstanceId,
+        input: &InputId,
+    ) -> Option<&RuleInputSource> {
+        self.execution_bindings
+            .input_source(compartment, substance, input)
+    }
     pub fn units(&self) -> impl ExactSizeIterator<Item = (&SubstanceId, &UnitId)> {
         self.units.iter()
     }
@@ -337,6 +371,7 @@ pub struct ModelArtifactBuilder {
     forcings: Vec<ForcingSeries>,
     tables: Vec<InterpolationTable>,
     rules: Vec<RuleDefinition>,
+    execution_bindings: ExecutionBindings,
     units: Vec<(SubstanceId, UnitId)>,
     versions: ModelVersions,
 }
@@ -361,6 +396,44 @@ impl ModelArtifactBuilder {
     pub fn with_rules(mut self, rules: Vec<RuleDefinition>) -> Self {
         self.rules = rules;
         self
+    }
+    #[must_use]
+    pub fn with_execution_bindings(mut self, bindings: ExecutionBindings) -> Self {
+        self.execution_bindings = bindings;
+        self
+    }
+    /// Concise alias for [`Self::with_execution_bindings`].
+    #[must_use]
+    pub fn with_bindings(self, bindings: ExecutionBindings) -> Self {
+        self.with_execution_bindings(bindings)
+    }
+    /// Replaces transfer bindings while preserving configured rule-input bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either collection contains duplicate coordinates.
+    pub fn with_transfer_bindings(
+        mut self,
+        bindings: Vec<TransferBranchBinding>,
+    ) -> Result<Self, crate::execution_bindings::ExecutionBindingsError> {
+        self.execution_bindings =
+            ExecutionBindings::new(bindings, self.execution_bindings.input_bindings().cloned())?;
+        Ok(self)
+    }
+    /// Replaces rule-input bindings while preserving configured transfer bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either collection contains duplicate coordinates.
+    pub fn with_rule_input_bindings(
+        mut self,
+        bindings: Vec<RuleInputBinding>,
+    ) -> Result<Self, crate::execution_bindings::ExecutionBindingsError> {
+        self.execution_bindings = ExecutionBindings::new(
+            self.execution_bindings.transfer_bindings().cloned(),
+            bindings,
+        )?;
+        Ok(self)
     }
     #[must_use]
     pub fn with_units(mut self, units: Vec<(SubstanceId, UnitId)>) -> Self {
@@ -462,6 +535,14 @@ impl ModelArtifactBuilder {
                 });
             }
         }
+        validate_execution_bindings(
+            &self.execution_bindings,
+            &rules,
+            &self.topology,
+            &forcings,
+            &tables,
+            &projections,
+        )?;
         let mut units = BTreeMap::new();
         for (substance, unit) in self.units {
             if !self.registry.contains(&substance) {
@@ -488,6 +569,7 @@ impl ModelArtifactBuilder {
             forcings,
             tables,
             rules,
+            execution_bindings: self.execution_bindings,
             units,
             versions: self.versions,
             canonical_bytes: Box::new([]),
@@ -620,6 +702,108 @@ pub enum ModelArtifactError {
         substance: SubstanceId,
         projection: ProjectionId,
     },
+    /// Fires when an expression projection reference misstates the declared value kind.
+    #[error(
+        "rule for compartment `{compartment}`, substance `{substance}` expects projection `{projection}` kind {expected:?}, but the reference declares {actual:?}"
+    )]
+    RuleProjectionKindMismatch {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        projection: ProjectionId,
+        expected: ProjectionValueKind,
+        actual: ProjectionValueKind,
+    },
+    /// Fires when a partition branch has no declared destination.
+    #[error(
+        "rule for compartment `{compartment}`, substance `{substance}` has unbound transfer branch `{branch}`"
+    )]
+    MissingTransferBranchBinding {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        branch: TransferBranchId,
+    },
+    /// Fires when a transfer branch destination is absent from the topology.
+    #[error(
+        "rule for compartment `{compartment}`, substance `{substance}`, branch `{branch}` binds undeclared endpoint `{destination}`"
+    )]
+    UnknownTransferDestination {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        branch: TransferBranchId,
+        destination: CompartmentId,
+    },
+    /// Fires when a transfer binding names no branch of the selected rule.
+    #[error(
+        "transfer binding for compartment `{compartment}`, substance `{substance}` names unknown branch `{branch}`"
+    )]
+    UnknownTransferBranchBinding {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        branch: TransferBranchId,
+    },
+    /// Fires when a generic input leaf has no declared source.
+    #[error(
+        "rule for compartment `{compartment}`, substance `{substance}` has unbound input `{input}`"
+    )]
+    MissingRuleInputBinding {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        input: InputId,
+    },
+    /// Fires when an input binding misstates the value kind declared by its rule leaf.
+    #[error(
+        "input binding for compartment `{compartment}`, substance `{substance}`, input `{input}` declares {actual:?}, but the rule expects {expected:?}"
+    )]
+    RuleInputBindingKindMismatch {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        input: InputId,
+        expected: ExpressionValueKind,
+        actual: ExpressionValueKind,
+    },
+    /// Fires when an input binding names no input leaf of the selected rule.
+    #[error(
+        "input binding for compartment `{compartment}`, substance `{substance}` names unknown input `{input}`"
+    )]
+    UnknownRuleInputBinding {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        input: InputId,
+    },
+    /// Fires when a bound input source is absent from the artifact source catalogue.
+    #[error(
+        "rule for compartment `{compartment}`, substance `{substance}`, input `{input}` binds missing {source_kind} source `{source_identity}`"
+    )]
+    MissingRuleInputSource {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        input: InputId,
+        source_kind: &'static str,
+        source_identity: String,
+    },
+    /// Fires when an input leaf and its bound source have incompatible value kinds.
+    #[error(
+        "rule for compartment `{compartment}`, substance `{substance}`, input `{input}` expects {expected:?}, but its source provides {actual:?}"
+    )]
+    RuleInputKindMismatch {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        input: InputId,
+        expected: ExpressionValueKind,
+        actual: ExpressionValueKind,
+    },
+    /// Fires when a projection input source misstates the declared projection value kind.
+    #[error(
+        "rule for compartment `{compartment}`, substance `{substance}`, input `{input}` expects projection `{projection}` kind {expected:?}, but the binding declares {actual:?}"
+    )]
+    RuleInputProjectionKindMismatch {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        input: InputId,
+        projection: ProjectionId,
+        expected: ProjectionValueKind,
+        actual: ProjectionValueKind,
+    },
     /// Fires when a unit identity is empty, non-ASCII, or padded with whitespace.
     #[error("invalid canonical unit identity `{value}`")]
     InvalidUnitIdentity { value: String },
@@ -684,20 +868,238 @@ fn validate_rule_references(
             });
         }
     }
-    let declared_projections = projections
-        .iter()
-        .map(|specification| specification.id())
-        .collect::<BTreeSet<_>>();
-    for projection in projection_refs {
-        if !declared_projections.contains(&projection) {
+    for (projection, actual) in projection_refs {
+        let Some(specification) = projections
+            .iter()
+            .find(|specification| specification.id() == &projection)
+        else {
             return Err(ModelArtifactError::MissingRuleProjection {
                 compartment: rule.compartment.clone(),
                 substance: rule.substance.clone(),
                 projection,
             });
+        };
+        let expected = specification.value_kind();
+        if expected != actual {
+            return Err(ModelArtifactError::RuleProjectionKindMismatch {
+                compartment: rule.compartment.clone(),
+                substance: rule.substance.clone(),
+                projection,
+                expected,
+                actual,
+            });
         }
     }
     Ok(())
+}
+
+fn validate_execution_bindings(
+    bindings: &ExecutionBindings,
+    rules: &BTreeMap<(CompartmentId, SubstanceId), RuleDefinition>,
+    topology: &Topology,
+    forcings: &BTreeMap<ForcingId, ForcingSeries>,
+    tables: &BTreeMap<TableId, InterpolationTable>,
+    projections: &ProjectionSet,
+) -> Result<(), ModelArtifactError> {
+    for ((compartment, substance), rule) in rules {
+        let branches = partition_branches(rule.disposition());
+        for branch in &branches {
+            let Some(destination) = bindings.destination(compartment, substance, branch) else {
+                return Err(ModelArtifactError::MissingTransferBranchBinding {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    branch: branch.clone(),
+                });
+            };
+            if topology.endpoint(destination).is_none() {
+                return Err(ModelArtifactError::UnknownTransferDestination {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    branch: branch.clone(),
+                    destination: destination.clone(),
+                });
+            }
+        }
+        let mut inputs = Vec::new();
+        collect_expression_inputs(rule.expression(), &mut inputs);
+        for reference in &inputs {
+            let Some(binding) = bindings.input_binding(compartment, substance, reference.id())
+            else {
+                return Err(ModelArtifactError::MissingRuleInputBinding {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    input: reference.id().clone(),
+                });
+            };
+            if binding.reference().value_kind() != reference.value_kind() {
+                return Err(ModelArtifactError::RuleInputBindingKindMismatch {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    input: reference.id().clone(),
+                    expected: reference.value_kind(),
+                    actual: binding.reference().value_kind(),
+                });
+            }
+            validate_input_source(
+                compartment,
+                substance,
+                reference,
+                binding.source(),
+                forcings,
+                tables,
+                projections,
+            )?;
+        }
+    }
+    for binding in bindings.transfer_bindings() {
+        let key = (binding.compartment().clone(), binding.substance().clone());
+        let known = rules
+            .get(&key)
+            .is_some_and(|rule| partition_branches(rule.disposition()).contains(binding.branch()));
+        if !known {
+            return Err(ModelArtifactError::UnknownTransferBranchBinding {
+                compartment: binding.compartment().clone(),
+                substance: binding.substance().clone(),
+                branch: binding.branch().clone(),
+            });
+        }
+    }
+    for binding in bindings.input_bindings() {
+        let key = (binding.compartment().clone(), binding.substance().clone());
+        let mut inputs = Vec::new();
+        if let Some(rule) = rules.get(&key) {
+            collect_expression_inputs(rule.expression(), &mut inputs);
+        }
+        if !inputs
+            .iter()
+            .any(|reference| reference.id() == binding.input())
+        {
+            return Err(ModelArtifactError::UnknownRuleInputBinding {
+                compartment: binding.compartment().clone(),
+                substance: binding.substance().clone(),
+                input: binding.input().clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn partition_branches(disposition: &PartitionExpr) -> BTreeSet<TransferBranchId> {
+    let mut branches = BTreeSet::new();
+    match disposition.view() {
+        PartitionExprView::RetainAll => {}
+        PartitionExprView::ReleaseAll { branch }
+        | PartitionExprView::ExogenousSeries { branch, .. }
+        | PartitionExprView::ConstantFractionTransfer { branch, .. } => {
+            branches.insert(branch.clone());
+        }
+        PartitionExprView::FixedFractionSplit {
+            branches: split, ..
+        } => {
+            branches.extend(split.iter().map(|part| part.branch().clone()));
+        }
+    }
+    branches
+}
+
+fn validate_input_source(
+    compartment: &CompartmentId,
+    substance: &SubstanceId,
+    reference: &crate::rule_reference::InputRef,
+    source: &RuleInputSource,
+    forcings: &BTreeMap<ForcingId, ForcingSeries>,
+    tables: &BTreeMap<TableId, InterpolationTable>,
+    projections: &ProjectionSet,
+) -> Result<(), ModelArtifactError> {
+    let missing = |source_kind: &'static str, source_identity: String| {
+        ModelArtifactError::MissingRuleInputSource {
+            compartment: compartment.clone(),
+            substance: substance.clone(),
+            input: reference.id().clone(),
+            source_kind,
+            source_identity,
+        }
+    };
+    match source {
+        RuleInputSource::Forcing(forcing) => {
+            if !forcings.contains_key(forcing.id()) {
+                return Err(missing("forcing", forcing.id().to_string()));
+            }
+        }
+        RuleInputSource::InterpolationTable(table) => {
+            if !tables.contains_key(table.id()) {
+                return Err(missing("interpolation-table", table.id().to_string()));
+            }
+        }
+        RuleInputSource::Projection(projection) => {
+            let Some(specification) = projections.iter().find(|item| item.id() == projection.id())
+            else {
+                return Err(missing("projection", projection.id().to_string()));
+            };
+            if specification.value_kind() != projection.value_kind() {
+                return Err(ModelArtifactError::RuleInputProjectionKindMismatch {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    input: reference.id().clone(),
+                    projection: projection.id().clone(),
+                    expected: specification.value_kind(),
+                    actual: projection.value_kind(),
+                });
+            }
+        }
+    }
+    if reference.value_kind() != source.value_kind() {
+        return Err(ModelArtifactError::RuleInputKindMismatch {
+            compartment: compartment.clone(),
+            substance: substance.clone(),
+            input: reference.id().clone(),
+            expected: reference.value_kind(),
+            actual: source.value_kind(),
+        });
+    }
+    Ok(())
+}
+
+fn collect_expression_inputs<'a>(
+    expression: &'a RuleExpr,
+    inputs: &mut Vec<&'a crate::rule_reference::InputRef>,
+) {
+    match expression.view() {
+        RuleExprView::Input(reference) => inputs.push(reference),
+        RuleExprView::InterpolatedTable { input, .. } => collect_expression_inputs(input, inputs),
+        RuleExprView::Add { lhs, rhs }
+        | RuleExprView::Subtract { lhs, rhs }
+        | RuleExprView::Multiply { lhs, rhs }
+        | RuleExprView::Divide { lhs, rhs }
+        | RuleExprView::Minimum { lhs, rhs }
+        | RuleExprView::Maximum { lhs, rhs }
+        | RuleExprView::Comparison { lhs, rhs, .. } => {
+            collect_expression_inputs(lhs, inputs);
+            collect_expression_inputs(rhs, inputs);
+        }
+        RuleExprView::Clamp {
+            value,
+            lower,
+            upper,
+        } => {
+            collect_expression_inputs(value, inputs);
+            collect_expression_inputs(lower, inputs);
+            collect_expression_inputs(upper, inputs);
+        }
+        RuleExprView::Select {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            collect_expression_inputs(condition, inputs);
+            collect_expression_inputs(when_true, inputs);
+            collect_expression_inputs(when_false, inputs);
+        }
+        RuleExprView::Parameter(_)
+        | RuleExprView::Forcing(_)
+        | RuleExprView::Projection(_)
+        | RuleExprView::Literal(_) => {}
+    }
 }
 
 fn collect_expression_references(
@@ -705,7 +1107,7 @@ fn collect_expression_references(
     parameters: &mut BTreeSet<ParameterId>,
     forcings: &mut BTreeSet<ForcingId>,
     tables: &mut BTreeSet<TableId>,
-    projections: &mut BTreeSet<ProjectionId>,
+    projections: &mut BTreeSet<(ProjectionId, ProjectionValueKind)>,
 ) {
     match expression.view() {
         RuleExprView::Parameter(reference) => {
@@ -715,7 +1117,7 @@ fn collect_expression_references(
             forcings.insert(reference.id().clone());
         }
         RuleExprView::Projection(reference) => {
-            projections.insert(reference.id().clone());
+            projections.insert((reference.id().clone(), reference.value_kind()));
         }
         RuleExprView::InterpolatedTable { table, input } => {
             tables.insert(table.id().clone());
@@ -815,6 +1217,78 @@ impl CanonicalEncode for ModelArtifact {
                     CanonicalField::ArtifactParameterValue,
                     f64::from_bits(*bits),
                 )?;
+            }
+        }
+        writer.write_count(
+            CanonicalField::ArtifactTransferBindings,
+            self.execution_bindings.transfer_bindings().len(),
+        )?;
+        for binding in self.execution_bindings.transfer_bindings() {
+            writer.write_string(
+                CanonicalField::ArtifactTransferBindingCompartment,
+                binding.compartment().as_str(),
+            )?;
+            writer.write_string(
+                CanonicalField::ArtifactTransferBindingSubstance,
+                binding.substance().as_str(),
+            )?;
+            writer.write_string(
+                CanonicalField::ArtifactTransferBindingBranch,
+                binding.branch().as_str(),
+            )?;
+            writer.write_string(
+                CanonicalField::ArtifactTransferBindingDestination,
+                binding.destination().as_str(),
+            )?;
+        }
+        writer.write_count(
+            CanonicalField::ArtifactInputBindings,
+            self.execution_bindings.input_bindings().len(),
+        )?;
+        for binding in self.execution_bindings.input_bindings() {
+            writer.write_string(
+                CanonicalField::ArtifactInputBindingCompartment,
+                binding.compartment().as_str(),
+            )?;
+            writer.write_string(
+                CanonicalField::ArtifactInputBindingSubstance,
+                binding.substance().as_str(),
+            )?;
+            writer.write_string(
+                CanonicalField::ArtifactInputBindingIdentity,
+                binding.input().as_str(),
+            )?;
+            writer.write_u8(match binding.reference().value_kind() {
+                ExpressionValueKind::Scalar => 0,
+                ExpressionValueKind::Truth => 1,
+            });
+            match binding.source() {
+                RuleInputSource::Forcing(reference) => {
+                    writer.write_u8(0);
+                    writer.write_string(
+                        CanonicalField::ArtifactInputSourceIdentity,
+                        reference.id().as_str(),
+                    )?;
+                }
+                RuleInputSource::InterpolationTable(reference) => {
+                    writer.write_u8(1);
+                    writer.write_string(
+                        CanonicalField::ArtifactInputSourceIdentity,
+                        reference.id().as_str(),
+                    )?;
+                }
+                RuleInputSource::Projection(reference) => {
+                    writer.write_u8(2);
+                    writer.write_string(
+                        CanonicalField::ArtifactInputSourceIdentity,
+                        reference.id().as_str(),
+                    )?;
+                    writer.write_u8(match reference.value_kind() {
+                        ProjectionValueKind::Extensive => 0,
+                        ProjectionValueKind::Scalar => 1,
+                        ProjectionValueKind::Truth => 2,
+                    });
+                }
             }
         }
         writer.write_count(CanonicalField::ArtifactUnits, self.units.len())?;
