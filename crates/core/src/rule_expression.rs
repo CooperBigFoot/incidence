@@ -556,8 +556,13 @@ impl RuleExpr {
         &self,
         writer: &mut CanonicalPayloadWriter,
     ) -> Result<(), CanonicalEncodingError> {
-        writer.write_u16(1);
-        writer.write_u16(1);
+        writer.write_u16(match self.rule_ir {
+            RuleIrVersion::V1 => 1,
+        });
+        writer.write_u16(match self.semantics {
+            NumericalSemanticsVersion::V1 => 1,
+            NumericalSemanticsVersion::V2 => 2,
+        });
         encode_node(self, writer)
     }
 }
@@ -999,8 +1004,13 @@ impl CanonicalEncode for RuleExpr {
         0x0016
     }
     fn encode_payload(&self, w: &mut CanonicalPayloadWriter) -> Result<(), CanonicalEncodingError> {
-        w.write_u16(1);
-        w.write_u16(1);
+        w.write_u16(match self.rule_ir {
+            RuleIrVersion::V1 => 1,
+        });
+        w.write_u16(match self.semantics {
+            NumericalSemanticsVersion::V1 => 1,
+            NumericalSemanticsVersion::V2 => 2,
+        });
         encode_node(self, w)
     }
 }

@@ -214,7 +214,7 @@ impl<'de> Deserialize<'de> for InterpolationTable {
 
 impl CanonicalEncode for InterpolationTable {
     fn root_tag(&self) -> u16 {
-        0x0019
+        0x001b
     }
 
     fn encode_payload(
@@ -224,6 +224,7 @@ impl CanonicalEncode for InterpolationTable {
         writer.write_string(CanonicalField::InterpolationTableIdentity, self.id.as_str())?;
         match self.numerical_semantics_version {
             NumericalSemanticsVersion::V1 => writer.write_u16(0x0001),
+            NumericalSemanticsVersion::V2 => writer.write_u16(0x0002),
         }
         writer.write_u8(match self.boundary_policy {
             InterpolationBoundaryPolicy::Reject => 0x00,

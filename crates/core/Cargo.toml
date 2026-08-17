@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 thiserror = "2"
 tracing = "0.1"
 

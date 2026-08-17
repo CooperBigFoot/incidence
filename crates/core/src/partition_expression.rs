@@ -411,8 +411,13 @@ impl CanonicalEncode for PartitionExpr {
         0x0017
     }
     fn encode_payload(&self, w: &mut CanonicalPayloadWriter) -> Result<(), CanonicalEncodingError> {
-        w.write_u16(1);
-        w.write_u16(1);
+        w.write_u16(match self.rule_ir {
+            RuleIrVersion::V1 => 1,
+        });
+        w.write_u16(match self.semantics {
+            NumericalSemanticsVersion::V1 => 1,
+            NumericalSemanticsVersion::V2 => 2,
+        });
         match &self.node {
             PartitionNode::RetainAll => w.write_u8(0x00),
             PartitionNode::ReleaseAll { branch } => {
