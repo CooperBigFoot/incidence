@@ -170,7 +170,6 @@ fn changing_only_a_branch_destination_changes_canonical_identity() {
     assert_ne!(first.digest(), second.digest());
 }
 
-
 #[test]
 fn input_binding_cannot_misstate_the_rule_leaf_kind() {
     let (_, _, _, _, _, _, _, downstream, _) = parts();
