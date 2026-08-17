@@ -1,6 +1,7 @@
 //! `incidence_core : () → ()` (pure conserved-flow domain boundary; no operations yet)
 
 pub mod canonical_encoding;
+pub mod disposition;
 pub mod endpoints;
 pub mod forcing;
 pub mod identity;
@@ -39,5 +40,13 @@ pub mod replay {
     pub use crate::ledger::{
         CompletenessReader, ConservationTotals, Replay, ReplayError, RunStatus, StockState,
         incidence_column, incidence_columns_close, replay_with_artifact,
+    };
+}
+
+/// Exhaustive rule dispositions and their atomic authoritative-log write boundary.
+pub mod validated_transaction {
+    pub use crate::disposition::{
+        Allocation, Disposition, DispositionError, SubstanceDisposition, TransactionError,
+        ValidatedTransaction, commit_disposition,
     };
 }
