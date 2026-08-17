@@ -520,7 +520,7 @@ impl StepExecutor {
     ) -> Result<(), ExecutionError> {
         replay_with_artifact(log, artifact)?;
         if log.is_sealed() {
-            return Ok(());
+            return Err(ExecutionError::AlreadyCompleted);
         }
         let generated = Self::generate(artifact, log.genesis().run_id())?;
         if log.transfer_count() > generated.transfer_count() {
