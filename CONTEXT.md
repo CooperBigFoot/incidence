@@ -86,4 +86,4 @@
 
 | Topic | Current interpretation | Resolution condition |
 |---|---|---|
-| Sufficiency of the closed rule vocabulary | The vocabulary can construct the Muskingum recurrence shape from public lag, authoritative-fact, parameter, prior-state, and projection references, but the complete fixture rule set has not yet been built or executed. | Resolve only when the complete fixture rule set is built and executed against the public IR; inability to express a fixture requires a closed-vocabulary design decision, never an opaque extension. |
+| Sufficiency of the closed rule vocabulary | The complete hydrology fixture rule set is constructible and validates against the public closed IR; execution remains unproved. | Resolve execution adequacy only when the complete fixture set runs to completion against the interpreter; inability to execute a fixture requires a closed-vocabulary design decision, never an opaque extension. |
