@@ -4,6 +4,7 @@ pub mod canonical_encoding;
 pub mod dense_projection;
 pub mod disposition;
 pub mod endpoints;
+pub mod execution;
 pub mod execution_bindings;
 pub mod forcing;
 pub mod identity;
