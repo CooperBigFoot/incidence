@@ -1,6 +1,7 @@
 //! `incidence_core : () → ()` (pure conserved-flow domain boundary; no operations yet)
 
 pub mod canonical_encoding;
+pub mod dense_projection;
 pub mod endpoints;
 pub mod forcing;
 pub mod identity;
