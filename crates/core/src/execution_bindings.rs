@@ -228,14 +228,22 @@ impl ExecutionBindings {
         substance: &SubstanceId,
         input: &InputId,
     ) -> Option<&RuleInputSource> {
-        self.inputs
-            .iter()
-            .find(|binding| {
-                binding.compartment() == compartment
-                    && binding.substance() == substance
-                    && binding.input() == input
-            })
+        self.input_binding(compartment, substance, input)
             .map(RuleInputBinding::source)
+    }
+
+    #[must_use]
+    pub(crate) fn input_binding(
+        &self,
+        compartment: &CompartmentId,
+        substance: &SubstanceId,
+        input: &InputId,
+    ) -> Option<&RuleInputBinding> {
+        self.inputs.iter().find(|binding| {
+            binding.compartment() == compartment
+                && binding.substance() == substance
+                && binding.input() == input
+        })
     }
 }
 

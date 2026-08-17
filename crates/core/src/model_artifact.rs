@@ -750,6 +750,17 @@ pub enum ModelArtifactError {
         substance: SubstanceId,
         input: InputId,
     },
+    /// Fires when an input binding misstates the value kind declared by its rule leaf.
+    #[error(
+        "input binding for compartment `{compartment}`, substance `{substance}`, input `{input}` declares {actual:?}, but the rule expects {expected:?}"
+    )]
+    RuleInputBindingKindMismatch {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        input: InputId,
+        expected: ExpressionValueKind,
+        actual: ExpressionValueKind,
+    },
     /// Fires when an input binding names no input leaf of the selected rule.
     #[error(
         "input binding for compartment `{compartment}`, substance `{substance}` names unknown input `{input}`"
@@ -912,18 +923,28 @@ fn validate_execution_bindings(
         let mut inputs = Vec::new();
         collect_expression_inputs(rule.expression(), &mut inputs);
         for reference in &inputs {
-            let Some(source) = bindings.input_source(compartment, substance, reference.id()) else {
+            let Some(binding) = bindings.input_binding(compartment, substance, reference.id())
+            else {
                 return Err(ModelArtifactError::MissingRuleInputBinding {
                     compartment: compartment.clone(),
                     substance: substance.clone(),
                     input: reference.id().clone(),
                 });
             };
+            if binding.reference().value_kind() != reference.value_kind() {
+                return Err(ModelArtifactError::RuleInputBindingKindMismatch {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    input: reference.id().clone(),
+                    expected: reference.value_kind(),
+                    actual: binding.reference().value_kind(),
+                });
+            }
             validate_input_source(
                 compartment,
                 substance,
                 reference,
-                source,
+                binding.source(),
                 forcings,
                 tables,
                 projections,
