@@ -18,7 +18,10 @@ use crate::initial_stocks::InitialStocks;
 use crate::interpolation_table::InterpolationTable;
 use crate::numerical_semantics::NumericalSemanticsVersion;
 use crate::partition_expression::{PartitionExpr, PartitionExprView};
-use crate::projection::ProjectionSet;
+use crate::projection::{
+    AuthoritativeFactSelector, ProjectionSet, ProjectionSource, ProjectionSpecView,
+    RecurrenceInputSource,
+};
 use crate::rule_expression::{RuleExpr, RuleExprView};
 use crate::rule_reference::{ForcingId, ParameterId, ProjectionId, TableId};
 use crate::substance_registry::SubstanceRegistry;
@@ -399,6 +402,11 @@ impl ModelArtifactBuilder {
                     projection: specification.id().clone(),
                 });
             }
+            validate_projection_fact_selectors(
+                specification.view(),
+                &self.topology,
+                &self.registry,
+            )?;
         }
         let mut forcings = BTreeMap::new();
         for forcing in self.forcings {
@@ -522,6 +530,22 @@ pub enum ModelArtifactError {
     /// Fires when a projection's numerical version differs from the artifact selection.
     #[error("projection `{projection}` has a different numerical semantics version")]
     ProjectionNumericalVersionMismatch { projection: ProjectionId },
+    /// Fires when a projection reads transfer facts for an endpoint absent from the topology.
+    #[error(
+        "projection `{projection}` refers to compartment `{compartment}`, which is absent from the topology"
+    )]
+    UnknownProjectionFactCompartment {
+        projection: ProjectionId,
+        compartment: CompartmentId,
+    },
+    /// Fires when a projection reads transfer facts for a substance absent from the registry.
+    #[error(
+        "projection `{projection}` refers to substance `{substance}`, which is absent from the registry"
+    )]
+    UnknownProjectionFactSubstance {
+        projection: ProjectionId,
+        substance: SubstanceId,
+    },
     /// Fires when a forcing does not cover the artifact horizon exactly.
     #[error("forcing `{forcing}` does not cover the model horizon")]
     ForcingHorizonMismatch { forcing: ForcingId },
@@ -635,6 +659,73 @@ pub enum ModelArtifactError {
     /// Fires when canonical bytes cannot represent a field.
     #[error(transparent)]
     CanonicalEncoding(#[from] CanonicalEncodingError),
+}
+
+fn validate_projection_fact_selectors(
+    specification: ProjectionSpecView<'_>,
+    topology: &Topology,
+    registry: &SubstanceRegistry,
+) -> Result<(), ModelArtifactError> {
+    match specification {
+        ProjectionSpecView::BoundedLag(specification) => validate_projection_source(
+            specification.id(),
+            specification.source(),
+            topology,
+            registry,
+        ),
+        ProjectionSpecView::OrderedRollingAggregate(specification) => validate_projection_source(
+            specification.id(),
+            specification.source(),
+            topology,
+            registry,
+        ),
+        ProjectionSpecView::FiniteRecurrence(specification) => {
+            for binding in specification.inputs() {
+                if let RecurrenceInputSource::AuthoritativeFact(selector) = binding.input_source() {
+                    validate_projection_fact_selector(
+                        specification.id(),
+                        selector,
+                        topology,
+                        registry,
+                    )?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_projection_source(
+    projection: &ProjectionId,
+    source: &ProjectionSource,
+    topology: &Topology,
+    registry: &SubstanceRegistry,
+) -> Result<(), ModelArtifactError> {
+    if let ProjectionSource::AuthoritativeFact(selector) = source {
+        validate_projection_fact_selector(projection, selector, topology, registry)?;
+    }
+    Ok(())
+}
+
+fn validate_projection_fact_selector(
+    projection: &ProjectionId,
+    selector: &AuthoritativeFactSelector,
+    topology: &Topology,
+    registry: &SubstanceRegistry,
+) -> Result<(), ModelArtifactError> {
+    if topology.endpoint(selector.compartment()).is_none() {
+        return Err(ModelArtifactError::UnknownProjectionFactCompartment {
+            projection: projection.clone(),
+            compartment: selector.compartment().clone(),
+        });
+    }
+    if !registry.contains(selector.substance()) {
+        return Err(ModelArtifactError::UnknownProjectionFactSubstance {
+            projection: projection.clone(),
+            substance: selector.substance().clone(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_rule_references(
