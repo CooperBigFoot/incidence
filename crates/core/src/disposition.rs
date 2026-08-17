@@ -200,6 +200,7 @@ pub fn commit_disposition(
         };
 
         let mut partitioned = entry.retained.value();
+        let mut source_remaining = available.value();
         for allocation in &entry.allocations {
             partitioned = semantics
                 .add(partitioned, allocation.amount.value())
@@ -209,6 +210,25 @@ pub fn commit_disposition(
                     timestep,
                 })?;
             if allocation.amount.value().to_bits() != 0 {
+                if allocation.amount.value() <= source_remaining {
+                    let debited = semantics
+                        .subtract(source_remaining, allocation.amount.value())
+                        .map_err(|_| TransactionError::NonFinitePartition {
+                            compartment: compartment.clone(),
+                            substance: substance.clone(),
+                            timestep,
+                        })?;
+                    if debited.to_bits() == source_remaining.to_bits() {
+                        return Err(TransactionError::IneffectiveDebit {
+                            compartment: compartment.clone(),
+                            substance: substance.clone(),
+                            timestep,
+                            stock_bits: source_remaining.to_bits(),
+                            amount_bits: allocation.amount.value().to_bits(),
+                        });
+                    }
+                    source_remaining = debited;
+                }
                 let amounts = SparseSubstanceVector::new(
                     artifact.registry(),
                     [(substance.clone(), allocation.amount)],
@@ -421,6 +441,17 @@ pub enum TransactionError {
         timestep: TimestepIndex,
         available_bits: u64,
         requested_bits: u64,
+    },
+    /// Fires when a positive allocation is too small to debit the finite source exactly.
+    #[error(
+        "allocation from compartment `{compartment}`, substance `{substance}` at timestep {timestep:?} cannot debit stock bits {stock_bits:#018x} by amount bits {amount_bits:#018x}"
+    )]
+    IneffectiveDebit {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+        stock_bits: u64,
+        amount_bits: u64,
     },
     /// Fires when explicit retention and allocations do not exactly cover available stock.
     #[error(
