@@ -361,7 +361,7 @@ impl HydrologyModelDocument {
             rule(
                 "linear-reservoir",
                 projection("linear-reservoir-state"),
-                &[("linear-coefficient", 0.5)],
+                &[("linear-coefficient", 0.25)],
             ),
             rule("evaporation", evaporation, &[]),
             rule("seepage", seepage, &[("seepage-conductance", 0.5)]),
