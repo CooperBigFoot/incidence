@@ -214,7 +214,7 @@ impl<'de> Deserialize<'de> for InterpolationTable {
 
 impl CanonicalEncode for InterpolationTable {
     fn root_tag(&self) -> u16 {
-        0x0019
+        0x001b
     }
 
     fn encode_payload(

@@ -187,7 +187,7 @@ impl<'de> Deserialize<'de> for ForcingSeries {
 
 impl CanonicalEncode for ForcingSeries {
     fn root_tag(&self) -> u16 {
-        0x0018
+        0x001a
     }
 
     fn encode_payload(
