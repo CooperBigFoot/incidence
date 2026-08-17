@@ -142,6 +142,9 @@ fn projection(value: &str) -> RuleExpr {
 fn add(lhs: RuleExpr, rhs: RuleExpr) -> RuleExpr {
     RuleExpr::add(lhs, rhs).unwrap_or_else(|error| panic!("invalid addition: {error}"))
 }
+fn subtract(lhs: RuleExpr, rhs: RuleExpr) -> RuleExpr {
+    RuleExpr::subtract(lhs, rhs).unwrap_or_else(|error| panic!("invalid subtraction: {error}"))
+}
 fn multiply(lhs: RuleExpr, rhs: RuleExpr) -> RuleExpr {
     RuleExpr::multiply(lhs, rhs).unwrap_or_else(|error| panic!("invalid multiplication: {error}"))
 }
@@ -227,14 +230,26 @@ fn projection_document() -> ProjectionSet {
     )
     .expect("travel-time lag")
     .into();
-    let linear_update = multiply(parameter("linear-coefficient"), input("linear-previous"));
+    let linear_previous = input("linear-previous-storage");
+    let linear_coefficient = parameter("linear-coefficient");
+    let linear_storage_update = multiply(
+        subtract(literal(1.0), linear_coefficient.clone()),
+        linear_previous.clone(),
+    );
+    let linear_release_update = multiply(linear_coefficient, linear_previous);
     let linear: ProjectionSpec = FiniteRecurrenceSpec::new(
         R,
         S,
         projection_id("linear-reservoir-state"),
-        vec![ProjectionValueKind::Extensive],
+        vec![
+            ProjectionValueKind::Extensive,
+            ProjectionValueKind::Extensive,
+        ],
         vec![RecurrenceInputBinding::new(
-            InputRef::new(input_id("linear-previous"), ExpressionValueKind::Scalar),
+            InputRef::new(
+                input_id("linear-previous-storage"),
+                ExpressionValueKind::Scalar,
+            ),
             RecurrenceInputSource::PreviousState {
                 index: 0,
                 value_kind: ProjectionValueKind::Extensive,
@@ -244,8 +259,8 @@ fn projection_document() -> ProjectionSet {
             parameter_id("linear-coefficient"),
             ExpressionValueKind::Scalar,
         )],
-        vec![linear_update],
-        0,
+        vec![linear_storage_update, linear_release_update],
+        1,
     )
     .expect("linear reservoir recurrence")
     .into();
@@ -273,7 +288,10 @@ fn projection_document() -> ProjectionSet {
             ),
             state(
                 "linear-reservoir-state",
-                vec![InitialProjectionValue::Extensive(8.0)],
+                vec![
+                    InitialProjectionValue::Extensive(8.0),
+                    InitialProjectionValue::Extensive(0.0),
+                ],
             ),
         ],
     )
