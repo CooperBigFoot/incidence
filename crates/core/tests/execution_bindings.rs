@@ -65,12 +65,21 @@ fn build(
     destination: CompartmentId,
     include_branch: bool,
 ) -> Result<ModelArtifact, ModelArtifactError> {
-    let (topology, registry, stocks, calendar, horizon, water, source, _, _) = parts();
-    let branch = TransferBranchId::parse("released").expect("valid id");
     let input = InputRef::new(
         InputId::parse("rain-input").expect("valid id"),
         ExpressionValueKind::Scalar,
     );
+    build_with_input_binding(destination, include_branch, input.clone(), input)
+}
+
+fn build_with_input_binding(
+    destination: CompartmentId,
+    include_branch: bool,
+    expression_input: InputRef,
+    binding_input: InputRef,
+) -> Result<ModelArtifact, ModelArtifactError> {
+    let (topology, registry, stocks, calendar, horizon, water, source, _, _) = parts();
+    let branch = TransferBranchId::parse("released").expect("valid id");
     let rain = ForcingId::parse("rain").expect("valid id");
     let rule = RuleDefinition::new(
         source.clone(),
@@ -78,7 +87,7 @@ fn build(
         RuleExpr::input(
             RuleIrVersion::V1,
             NumericalSemanticsVersion::V1,
-            input.clone(),
+            expression_input,
         ),
         PartitionExpr::release_all(
             RuleIrVersion::V1,
@@ -102,7 +111,7 @@ fn build(
         [RuleInputBinding::new(
             source,
             water.clone(),
-            input,
+            binding_input,
             RuleInputSource::Forcing(ForcingRef::new(rain.clone())),
         )],
     )
@@ -159,4 +168,22 @@ fn changing_only_a_branch_destination_changes_canonical_identity() {
     let second = build(boundary, true).expect("boundary binding resolves");
     assert_ne!(first.canonical_bytes(), second.canonical_bytes());
     assert_ne!(first.digest(), second.digest());
+}
+
+
+#[test]
+fn input_binding_cannot_misstate_the_rule_leaf_kind() {
+    let (_, _, _, _, _, _, _, downstream, _) = parts();
+    let input = InputId::parse("rain-input").expect("valid id");
+    let result = build_with_input_binding(
+        downstream,
+        true,
+        InputRef::new(input.clone(), ExpressionValueKind::Scalar),
+        InputRef::new(input, ExpressionValueKind::Truth),
+    );
+
+    assert!(
+        result.is_err(),
+        "an artifact must reject binding metadata that disagrees with its rule leaf"
+    );
 }
