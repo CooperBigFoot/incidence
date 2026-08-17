@@ -544,38 +544,24 @@ impl Replay {
             return Ok(ValueState::NotModelled);
         }
         let semantics = self.artifact.versions().numerical_semantics();
-        let reduce = |state: &StockState| -> Result<f64, ReplayError> {
-            let mut total = 0.0;
-            for endpoint in self.artifact.topology().endpoints() {
-                let value = match endpoint {
-                    TopologyEndpoint::Finite(_) => state
-                        .finite
-                        .get(&(endpoint.id().clone(), substance.clone()))
-                        .map(|value| value.value()),
-                    TopologyEndpoint::Boundary(_) => state
-                        .boundary
-                        .get(&(endpoint.id().clone(), substance.clone()))
-                        .map(|value| value.value()),
-                }
-                .ok_or_else(|| ReplayError::ConservationReduction {
-                    substance: substance.clone(),
-                })?;
-                total = semantics.add(total, value).map_err(|_| {
-                    ReplayError::ConservationReduction {
-                        substance: substance.clone(),
-                    }
-                })?;
-            }
-            Ok(total)
-        };
         let initial = seed_state(
             self.artifact.topology(),
             self.artifact.registry(),
             self.artifact.initial_stocks(),
         )?;
         Ok(ValueState::Present(ConservationTotals {
-            genesis_total: reduce(&initial)?,
-            final_total: reduce(&self.final_state)?,
+            genesis_total: reduce_state_total(
+                &initial,
+                self.artifact.topology(),
+                substance,
+                semantics,
+            )?,
+            final_total: reduce_state_total(
+                &self.final_state,
+                self.artifact.topology(),
+                substance,
+                semantics,
+            )?,
         }))
     }
 }
@@ -780,8 +766,51 @@ fn apply_transfer(
 ) -> Result<(), ReplayError> {
     let mut staged = state.clone();
     apply_transfer_uncommitted(&mut staged, transfer, artifact)?;
+    let semantics = artifact.versions().numerical_semantics();
+    for (substance, _) in transfer.amounts.iter() {
+        let before = reduce_state_total(state, artifact.topology(), substance, semantics)?;
+        let after = reduce_state_total(&staged, artifact.topology(), substance, semantics)?;
+        if before.to_bits() != after.to_bits() {
+            return Err(ReplayError::NumericalConservationLoss {
+                substance: substance.clone(),
+                timestep: transfer.timestep,
+                before_bits: before.to_bits(),
+                after_bits: after.to_bits(),
+            });
+        }
+    }
     *state = staged;
     Ok(())
+}
+
+fn reduce_state_total(
+    state: &StockState,
+    topology: &Topology,
+    substance: &SubstanceId,
+    semantics: NumericalSemanticsVersion,
+) -> Result<f64, ReplayError> {
+    let mut total = 0.0;
+    for endpoint in topology.endpoints() {
+        let value = match endpoint {
+            TopologyEndpoint::Finite(_) => state
+                .finite
+                .get(&(endpoint.id().clone(), substance.clone()))
+                .map(|value| value.value()),
+            TopologyEndpoint::Boundary(_) => state
+                .boundary
+                .get(&(endpoint.id().clone(), substance.clone()))
+                .map(|value| value.value()),
+        }
+        .ok_or_else(|| ReplayError::ConservationReduction {
+            substance: substance.clone(),
+        })?;
+        total = semantics
+            .add(total, value)
+            .map_err(|_| ReplayError::ConservationReduction {
+                substance: substance.clone(),
+            })?;
+    }
+    Ok(total)
 }
 
 fn apply_transfer_uncommitted(
@@ -949,6 +978,16 @@ pub enum ReplayError {
     /// Fires when a modelled substance cannot be reduced without missing or non-finite state.
     #[error("cannot reduce conservation total for modelled substance `{substance}`")]
     ConservationReduction { substance: SubstanceId },
+    /// Fires when binary64 endpoint updates change the canonical conserved total.
+    #[error(
+        "transfer at {timestep:?} changes conserved total for `{substance}` from bits {before_bits:#018x} to {after_bits:#018x}"
+    )]
+    NumericalConservationLoss {
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+        before_bits: u64,
+        after_bits: u64,
+    },
     /// Fires when a caller explicitly requires a completed run but receives a prefix.
     #[error("authoritative log is a resumable prefix without RunCompleted")]
     MissingCompletionSeal,
