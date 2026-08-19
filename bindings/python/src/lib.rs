@@ -1,30 +1,79 @@
-//! python_binding : PythonModelData ⇀ ModelArtifactHandle
+//! python_binding : PythonModelData × RunId × TransferSelector × [TimestepIndex] ⇀ PresenceSeries
 //!
-//! This crate is only a containment and transport boundary. Domain validation remains in
-//! `incidence-core`'s public model-document decoder and artifact constructor.
+//! This crate is only a containment and transport boundary. Domain validation, execution, and
+//! presence semantics remain in `incidence-core`.
 
+use incidence_core::dense_projection::DenseTransferProjection;
+use incidence_core::execution::execute_model;
+use incidence_core::identity::{CompartmentId, SubstanceId};
+use incidence_core::ledger::{AuthoritativeLog, RunId};
 use incidence_core::model_artifact::ModelArtifact;
 use incidence_core::model_document::ModelDocument;
+use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::numerical_semantics::{NumericalSemanticsVersion, ScalarComparison};
+use incidence_core::presence::ValueState;
+use incidence_core::projection::AuthoritativeFactSelector;
 use incidence_core::rule_expression::RuleExpr;
 use incidence_core::rule_reference::{
     ExpressionValueKind, ForcingId, ForcingRef, InputId, InputRef, InterpolatedTableRef,
     ParameterId, ParameterRef, ProjectionId, ProjectionRef, ProjectionValueKind, TableId,
 };
+use incidence_core::temporal::TimestepIndex;
 use incidence_core::versions::RuleIrVersion;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use std::any::Any;
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const MAX_DOCUMENT_NESTING: usize = 256;
+const MAX_SERIES_LENGTH: u64 = 10_000_000;
 
 /// An immutable model validated and owned by the Rust core.
 #[pyclass(frozen, module = "incidence._incidence")]
 struct CompiledModel {
-    _artifact: ModelArtifact,
+    artifact: ModelArtifact,
+}
+
+/// A completed authoritative run bound to the exact artifact that produced it.
+#[pyclass(frozen, module = "incidence._incidence")]
+struct CompletedRun {
+    artifact: ModelArtifact,
+    log: AuthoritativeLog,
+}
+
+/// A time-indexed result whose values can never be separated from their presence states.
+#[pyclass(frozen, module = "incidence._incidence")]
+struct PresenceSeries {
+    timesteps: Vec<u64>,
+    values: Vec<Option<f64>>,
+    presence: Vec<&'static str>,
+}
+
+#[pymethods]
+impl PresenceSeries {
+    /// The requested timestep coordinates, in ascending order.
+    #[getter]
+    fn timesteps(&self) -> Vec<u64> {
+        self.timesteps.clone()
+    }
+
+    /// Values at the requested coordinates; absent and unmodelled positions contain `None`.
+    #[getter]
+    fn values(&self) -> Vec<Option<f64>> {
+        self.values.clone()
+    }
+
+    /// Per-position states: `present`, `absent`, or `not_modelled`.
+    #[getter]
+    fn presence(&self) -> Vec<&'static str> {
+        self.presence.clone()
+    }
+
+    fn __len__(&self) -> usize {
+        self.timesteps.len()
+    }
 }
 
 fn panic_message(payload: Box<dyn Any + Send>) -> String {
@@ -44,6 +93,174 @@ fn contain<T>(operation: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
             "incidence boundary contained panic: {}",
             panic_message(payload)
         ))),
+    }
+}
+
+fn parse_run_id(value: &Bound<'_, PyAny>) -> PyResult<RunId> {
+    if let Ok(bytes) = value.cast::<PyBytes>() {
+        let bytes: [u8; 16] = bytes
+            .as_bytes()
+            .try_into()
+            .map_err(|_| PyValueError::new_err("run id bytes must contain exactly 16 bytes"))?;
+        return Ok(RunId::from_bytes(bytes));
+    }
+    if let Ok(text) = value.extract::<&str>() {
+        let compact = text
+            .chars()
+            .filter(|character| *character != '-')
+            .collect::<String>();
+        if compact.len() != 32 || !compact.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(PyValueError::new_err(
+                "run id text must contain exactly 32 hexadecimal digits, with optional hyphens",
+            ));
+        }
+        let mut bytes = [0_u8; 16];
+        for (index, destination) in bytes.iter_mut().enumerate() {
+            let offset = index * 2;
+            *destination =
+                u8::from_str_radix(&compact[offset..offset + 2], 16).map_err(|error| {
+                    PyValueError::new_err(format!("invalid hexadecimal run id: {error}"))
+                })?;
+        }
+        return Ok(RunId::from_bytes(bytes));
+    }
+    Err(PyValueError::new_err(
+        "run id must be 16 bytes or hexadecimal text",
+    ))
+}
+
+fn series_selector(
+    direction: &str,
+    compartment: CompartmentId,
+    substance: SubstanceId,
+) -> PyResult<AuthoritativeFactSelector> {
+    match direction {
+        "incoming" => Ok(AuthoritativeFactSelector::IncomingTransferAmount {
+            compartment,
+            substance,
+        }),
+        "outgoing" => Ok(AuthoritativeFactSelector::OutgoingTransferAmount {
+            compartment,
+            substance,
+        }),
+        other => Err(PyValueError::new_err(format!(
+            "transfer direction must be `incoming` or `outgoing`, got `{other}`"
+        ))),
+    }
+}
+
+fn append_state(
+    state: ValueState<NonNegativeAmount>,
+    values: &mut Vec<Option<f64>>,
+    presence: &mut Vec<&'static str>,
+) {
+    match state {
+        ValueState::Present(amount) => {
+            values.push(Some(amount.value()));
+            presence.push("present");
+        }
+        ValueState::Absent => {
+            values.push(None);
+            presence.push("absent");
+        }
+        ValueState::NotModelled => {
+            values.push(None);
+            presence.push("not_modelled");
+        }
+    }
+}
+
+#[pymethods]
+impl CompiledModel {
+    /// Execute the validated model to its declared horizon and seal its authoritative log.
+    fn run(&self, run_id: &Bound<'_, PyAny>) -> PyResult<CompletedRun> {
+        contain(|| {
+            let log = execute_model(&self.artifact, parse_run_id(run_id)?)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            Ok(CompletedRun {
+                artifact: self.artifact.clone(),
+                log,
+            })
+        })
+    }
+}
+
+#[pymethods]
+impl CompletedRun {
+    /// Read one dense transfer amount series with a presence state for every requested timestep.
+    #[pyo3(signature = (compartment, substance, *, direction = "outgoing", first = None, last = None))]
+    fn transfer_series(
+        &self,
+        compartment: &str,
+        substance: &str,
+        direction: &str,
+        first: Option<u64>,
+        last: Option<u64>,
+    ) -> PyResult<PresenceSeries> {
+        contain(|| {
+            let compartment = CompartmentId::parse(compartment)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            let substance = SubstanceId::parse(substance)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            let selector = series_selector(direction, compartment, substance)?;
+            let projection = DenseTransferProjection::from_log_with_artifact(
+                &self.log,
+                &self.artifact,
+                selector,
+            )
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+
+            let first = first.unwrap_or_else(|| projection.horizon().first().value());
+            let last = last.unwrap_or_else(|| projection.horizon().last().value());
+            if last < first {
+                return Err(PyValueError::new_err(format!(
+                    "series range is reversed: first timestep {first}, last timestep {last}"
+                )));
+            }
+            let length = last
+                .checked_sub(first)
+                .and_then(|span| span.checked_add(1))
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "series range from {first} through {last} cannot be represented"
+                    ))
+                })?;
+            if length > MAX_SERIES_LENGTH {
+                return Err(PyValueError::new_err(format!(
+                    "series range from {first} through {last} exceeds maximum length {MAX_SERIES_LENGTH}"
+                )));
+            }
+            let capacity = usize::try_from(length).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "series range from {first} through {last} cannot be materialised"
+                ))
+            })?;
+            let mut timesteps = Vec::new();
+            let mut values = Vec::new();
+            let mut presence = Vec::new();
+            timesteps.try_reserve_exact(capacity).map_err(|error| {
+                PyValueError::new_err(format!("cannot allocate requested series: {error}"))
+            })?;
+            values.try_reserve_exact(capacity).map_err(|error| {
+                PyValueError::new_err(format!("cannot allocate requested series: {error}"))
+            })?;
+            presence.try_reserve_exact(capacity).map_err(|error| {
+                PyValueError::new_err(format!("cannot allocate requested series: {error}"))
+            })?;
+            for timestep in first..=last {
+                timesteps.push(timestep);
+                append_state(
+                    projection.value_at(TimestepIndex::new(timestep)),
+                    &mut values,
+                    &mut presence,
+                );
+            }
+            Ok(PresenceSeries {
+                timesteps,
+                values,
+                presence,
+            })
+        })
     }
 }
 
@@ -108,9 +325,7 @@ fn compile_document(document: &Bound<'_, PyAny>) -> PyResult<CompiledModel> {
     let artifact = decoded
         .into_artifact()
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    Ok(CompiledModel {
-        _artifact: artifact,
-    })
+    Ok(CompiledModel { artifact })
 }
 
 /// Decode and validate a complete plain-data model document.
@@ -366,6 +581,8 @@ fn roundtrip_expression<'py>(
 
 fn initialize(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<CompiledModel>()?;
+    module.add_class::<CompletedRun>()?;
+    module.add_class::<PresenceSeries>()?;
     module.add_function(wrap_pyfunction!(compile_model, module)?)?;
     module.add_function(wrap_pyfunction!(literal, module)?)?;
     module.add_function(wrap_pyfunction!(param, module)?)?;

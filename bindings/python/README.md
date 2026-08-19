@@ -7,14 +7,21 @@ The binding accepts a complete plain-data model document and delegates all model
 from incidence import compile_model
 
 model = compile_model(document)  # `document` is a plain Python mapping
+run = model.run(bytes.fromhex("000102030405060708090a0b0c0d0e0f"))
+release = run.transfer_series("reservoir", "water", direction="outgoing")
+assert len(release.timesteps) == len(release.values) == len(release.presence)
 ```
 
 ## Public entry points
 
 - `compile_model(document)` decodes a plain-data Python value through Serde into the public Rust
   `ModelDocument`, then validates it into an opaque `CompiledModel`.
-- `CompiledModel` holds the validated core artifact for later binding packages. IPB2 deliberately
-  exposes no execution, result, substitution, or digest API.
+- `CompiledModel` holds the validated core artifact. `CompiledModel.run(run_id)` executes it and
+  returns an opaque sealed `CompletedRun`.
+- `CompletedRun.transfer_series(...)` returns a `PresenceSeries`. The result carries timestep,
+  value, and presence arrays of equal length. Dry modelled timesteps contain `0.0` with
+  `"present"`; positions outside the horizon contain `None` with `"absent"`; substances outside
+  the model registry contain `None` with `"not_modelled"`.
 
 All Rust panics in exported operations are contained at this module boundary and converted to
 `RuntimeError`. Decode and core validation failures are `ValueError`, so callers can safely
