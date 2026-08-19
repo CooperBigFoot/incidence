@@ -123,6 +123,7 @@ fn compile_model(document: &Bound<'_, PyAny>) -> PyResult<CompiledModel> {
 }
 
 fn expression(document: &Bound<'_, PyAny>) -> PyResult<RuleExpr> {
+    check_document_nesting(document)?;
     pythonize::depythonize(document)
         .map_err(|error| PyValueError::new_err(format!("invalid rule expression: {error}")))
 }
