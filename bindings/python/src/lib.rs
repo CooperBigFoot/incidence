@@ -20,7 +20,7 @@ use incidence_core::rule_reference::{
 };
 use incidence_core::temporal::TimestepIndex;
 use incidence_core::versions::RuleIrVersion;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use std::any::Any;
@@ -43,6 +43,48 @@ struct CompletedRun {
     log: AuthoritativeLog,
 }
 
+/// A sequence of result values that retains the presence state for every position.
+#[pyclass(frozen, module = "incidence._incidence", name = "_PresenceValues")]
+struct PresenceValues {
+    values: Vec<Option<f64>>,
+    presence: Vec<&'static str>,
+}
+
+#[pymethods]
+impl PresenceValues {
+    /// Per-position states corresponding exactly to this value sequence.
+    #[getter]
+    fn presence(&self) -> Vec<&'static str> {
+        self.presence.clone()
+    }
+
+    fn __len__(&self) -> usize {
+        self.values.len()
+    }
+
+    fn __getitem__(&self, index: isize) -> PyResult<Option<f64>> {
+        let length = isize::try_from(self.values.len())
+            .map_err(|_| PyIndexError::new_err("presence value sequence is too large to index"))?;
+        let resolved = if index < 0 {
+            length.checked_add(index)
+        } else {
+            Some(index)
+        };
+        let value = resolved
+            .filter(|resolved| *resolved >= 0)
+            .and_then(|resolved| usize::try_from(resolved).ok())
+            .and_then(|resolved| self.values.get(resolved))
+            .ok_or_else(|| PyIndexError::new_err("presence value index out of range"))?;
+        Ok(*value)
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other
+            .extract::<Vec<Option<f64>>>()
+            .is_ok_and(|values| values == self.values)
+    }
+}
+
 /// A time-indexed result whose values can never be separated from their presence states.
 #[pyclass(frozen, module = "incidence._incidence")]
 struct PresenceSeries {
@@ -59,10 +101,13 @@ impl PresenceSeries {
         self.timesteps.clone()
     }
 
-    /// Values at the requested coordinates; absent and unmodelled positions contain `None`.
+    /// Values and their corresponding presence states at the requested coordinates.
     #[getter]
-    fn values(&self) -> Vec<Option<f64>> {
-        self.values.clone()
+    fn values(&self) -> PresenceValues {
+        PresenceValues {
+            values: self.values.clone(),
+            presence: self.presence.clone(),
+        }
     }
 
     /// Per-position states: `present`, `absent`, or `not_modelled`.
@@ -582,6 +627,7 @@ fn roundtrip_expression<'py>(
 fn initialize(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<CompiledModel>()?;
     module.add_class::<CompletedRun>()?;
+    module.add_class::<PresenceValues>()?;
     module.add_class::<PresenceSeries>()?;
     module.add_function(wrap_pyfunction!(compile_model, module)?)?;
     module.add_function(wrap_pyfunction!(literal, module)?)?;
