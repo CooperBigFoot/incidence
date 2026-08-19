@@ -1438,7 +1438,14 @@ impl<'de> Deserialize<'de> for ProjectionSpec {
             .map(Into::into),
         };
         let spec = result.map_err(serde::de::Error::custom)?;
-        let _ = wire.value_kind;
+        if wire.value_kind != spec.value_kind() {
+            return Err(serde::de::Error::custom(format_args!(
+                "projection {} declared value kind {:?} does not match derived {:?}",
+                spec.id(),
+                wire.value_kind,
+                spec.value_kind()
+            )));
+        }
         Ok(spec)
     }
 }
