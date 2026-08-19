@@ -1,4 +1,4 @@
-//! python_binding : PythonModelData × RunId × TransferSelector × [TimestepIndex] ⇀ PresenceSeries
+//! python_binding : PythonModelData × RunId ⇀ (CanonicalLogBytes × LogDigest × PresenceQueries)
 //!
 //! This crate is only a containment and transport boundary. Domain validation, execution, and
 //! presence semantics remain in `incidence-core`.
@@ -6,7 +6,7 @@
 use incidence_core::dense_projection::DenseTransferProjection;
 use incidence_core::execution::execute_model;
 use incidence_core::identity::{CompartmentId, SubstanceId};
-use incidence_core::ledger::{AuthoritativeLog, RunId};
+use incidence_core::ledger::{AuthoritativeLog, RunId, replay_with_artifact};
 use incidence_core::model_artifact::ModelArtifact;
 use incidence_core::model_document::ModelDocument;
 use incidence_core::non_negative_amount::NonNegativeAmount;
@@ -232,6 +232,17 @@ impl CompiledModel {
 
 #[pymethods]
 impl CompletedRun {
+    /// Return the canonical authoritative-log bytes and their lowercase SHA-256 digest.
+    fn authoritative_log<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyBytes>, String)> {
+        contain(|| {
+            replay_with_artifact(&self.log, &self.artifact)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            let bytes = self.log.canonical_bytes();
+            let digest = self.log.digest().to_hex();
+            Ok((PyBytes::new(py, &bytes), digest))
+        })
+    }
+
     /// Read one dense transfer amount series with a presence state for every requested timestep.
     #[pyo3(signature = (compartment, substance, *, direction = "outgoing", first = None, last = None))]
     fn transfer_series(

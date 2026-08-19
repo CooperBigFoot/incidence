@@ -22,6 +22,9 @@ assert len(release.timesteps) == len(release.values) == len(release.presence)
   value, and presence arrays of equal length. Dry modelled timesteps contain `0.0` with
   `"present"`; positions outside the horizon contain `None` with `"absent"`; substances outside
   the model registry contain `None` with `"not_modelled"`.
+- `CompletedRun.authoritative_log()` returns the authoritative log's canonical bytes and its
+  lowercase hexadecimal digest as a tuple. The bytes are the exact payload authenticated by the
+  core digest.
 
 All Rust panics in exported operations are contained at this module boundary and converted to
 `RuntimeError`. Decode and core validation failures are `ValueError`, so callers can safely
