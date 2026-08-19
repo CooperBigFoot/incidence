@@ -58,6 +58,24 @@ fn invalid_initial_stock_is_rejected_without_an_artifact() {
 }
 
 #[test]
+fn contradictory_projection_value_kind_is_rejected() {
+    let mut encoded = serde_json::to_value(hydrology::fixture()).expect("serialize document");
+    let specifications = encoded["projections"]["specifications"]
+        .as_array_mut()
+        .expect("projection specifications");
+    assert_eq!(specifications[0]["value_kind"], "extensive");
+    specifications[0]["value_kind"] = serde_json::json!("truth");
+
+    let error = serde_json::from_value::<ModelDocument>(encoded)
+        .expect_err("a projection kind may not contradict its specification");
+    assert!(
+        error
+            .to_string()
+            .contains("declared value kind Truth does not match derived Extensive")
+    );
+}
+
+#[test]
 fn unknown_document_version_is_rejected_during_decode() {
     let encoded = serde_json::to_string(&hydrology::fixture()).expect("serialize model document");
     let unknown = encoded.replacen(
