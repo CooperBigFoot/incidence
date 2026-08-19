@@ -8,7 +8,9 @@ use incidence_core::ledger::RunId;
 
 #[test]
 fn linear_reservoir_releases_a_fraction_of_remaining_storage() {
-    let artifact = hydrology::HydrologyModelDocument::fixture().artifact();
+    let artifact = hydrology::fixture()
+        .artifact()
+        .expect("public hydrology document");
     let log = execute_model(&artifact, RunId::from_bytes([0x73; 16]))
         .unwrap_or_else(|error| panic!("hydrology model failed: {error}"));
     let releases = log

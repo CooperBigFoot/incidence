@@ -12,6 +12,7 @@ pub mod initial_stocks;
 pub mod interpolation_table;
 pub mod ledger;
 pub mod model_artifact;
+pub mod model_document;
 pub mod non_negative_amount;
 pub mod numerical_semantics;
 pub mod partition_expression;
