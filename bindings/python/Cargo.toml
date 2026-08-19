@@ -1,0 +1,17 @@
+[package]
+name = "incidence-python"
+version = "0.1.4"
+edition = "2024"
+publish = false
+
+[lib]
+name = "_incidence"
+crate-type = ["cdylib"]
+
+[dependencies]
+incidence-core = { path = "../../crates/core" }
+pyo3 = { version = "0.27", features = ["extension-module"] }
+pythonize = "0.27"
+
+[lints]
+workspace = true
