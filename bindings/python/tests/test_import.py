@@ -7,7 +7,12 @@ import incidence
 
 
 def test_documented_entry_points_are_importable() -> None:
-    assert incidence.__all__ == ["CompiledModel", "compile_model"]
+    expected = {
+        "CompiledModel", "compile_model", "literal", "param", "input", "forcing",
+        "projection", "add", "mul", "min", "max", "clamp", "compare", "select",
+        "table_lookup", "roundtrip_expression", "model_document", "rule",
+    }
+    assert expected <= set(incidence.__all__)
     assert callable(incidence.compile_model)
     assert isinstance(incidence.CompiledModel, type)
 

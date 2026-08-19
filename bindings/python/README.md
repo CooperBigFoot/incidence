@@ -33,3 +33,11 @@ uv run --no-sync pytest tests/test_panic_containment.py -q
 ```
 
 The project requires CPython 3.12 or newer. `uv.lock` pins the build and test tools.
+
+## Plain-data authoring
+
+Expression helpers such as `literal`, `param`, `input`, `forcing`, `projection`, `add`,
+`mul`, `min`, `max`, `clamp`, `compare`, `select`, and `table_lookup` call the Rust IR
+constructors and return only JSON-serialisable dictionaries. `model_document`, `rule`,
+`retain_all`, and `release_all` assemble the surrounding document shape without duplicating
+domain validation. `compile_model` remains the single validation entry point.

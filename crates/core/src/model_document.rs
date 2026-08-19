@@ -302,6 +302,32 @@ impl ModelDocument {
                 .map_err(|e| invalid("rule", e))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        for stock in &self.initial_stocks {
+            let stock_compartment = compartment(&stock.compartment)?;
+            if !rules
+                .iter()
+                .any(|rule| rule.compartment() == &stock_compartment)
+            {
+                continue;
+            }
+            for entry in &stock.amounts {
+                if entry.amount <= 0.0 {
+                    continue;
+                }
+                let stock_substance = substance(&entry.substance)?;
+                if !rules.iter().any(|rule| {
+                    rule.compartment() == &stock_compartment && rule.substance() == &stock_substance
+                }) {
+                    return Err(ModelDocumentError {
+                        component: "rule coverage",
+                        reason: format!(
+                            "rule for compartment `{stock_compartment}` omits substance `{stock_substance}` at timestep {}",
+                            horizon.first().value()
+                        ),
+                    });
+                }
+            }
+        }
         let transfers = self
             .transfer_bindings
             .iter()
