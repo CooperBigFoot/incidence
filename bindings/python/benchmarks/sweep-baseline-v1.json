@@ -55,7 +55,7 @@
   "procedure": {
     "build_profile": "release",
     "reproduction_command": "uv run --no-sync maturin develop --uv --release -q && PYTHONPATH=. uv run --no-sync python -m benchmarks.sweep_baseline --trials 1000 --workers 12",
-    "source_revision": "8eb551d911fd03db5bc485d81d448843bafc5dfe"
+    "source_revision": "d1d453a0d0af65ba259993588ed15d9cc6dc9038"
   },
   "recorded_at_utc": "2026-08-20T08:56:47.207497+00:00",
   "schema": "incidence.sweep-baseline.v1",
