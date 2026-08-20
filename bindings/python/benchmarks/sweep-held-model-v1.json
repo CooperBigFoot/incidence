@@ -56,7 +56,7 @@
     "baseline_source_revision": "d1d453a0d0af65ba259993588ed15d9cc6dc9038",
     "build_profile": "release",
     "reproduction_command": "uv run --no-sync maturin develop --uv --release -q && PYTHONPATH=. uv run --no-sync python -m benchmarks.sweep_held_model --trials 1000 --workers 12",
-    "source_revision": "be8f8425c96c7b9ee3e3ee7eaf70ea564d096f63"
+    "source_revision": "c7a71373c75f4805cec652d1b16985a29cae76b2"
   },
   "recorded_at_utc": "2026-08-20T13:04:48.963525+00:00",
   "schema": "incidence.sweep-held-model.v1",
