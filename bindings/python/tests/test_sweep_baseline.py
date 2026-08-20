@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 from benchmarks.sweep_baseline import (
@@ -56,7 +57,19 @@ def test_committed_record_is_readable_by_the_held_model_package() -> None:
     ).hexdigest()
     assert record["procedure"]["build_profile"] == "release"
     assert "--trials 1000 --workers 12" in record["procedure"]["reproduction_command"]
-    assert len(record["procedure"]["source_revision"]) == 40
+    source_revision = record["procedure"]["source_revision"]
+    assert len(source_revision) == 40
+    benchmark_at_source = subprocess.run(
+        [
+            "git",
+            "cat-file",
+            "-e",
+            f"{source_revision}:bindings/python/benchmarks/sweep_baseline.py",
+        ],
+        cwd=Path(__file__).parents[3],
+        check=False,
+    )
+    assert benchmark_at_source.returncode == 0
     assert record["execution"]["wall_clock_seconds"] > 0
     assert record["execution"]["workers"] >= 1
     assert set(record["machine"]) >= {"node", "platform", "machine", "logical_cpu_count"}
