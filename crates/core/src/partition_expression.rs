@@ -1,11 +1,12 @@
-//! partition_expression : VersionedPartitionShape × ValidatedFractions × TypedReferences ⇀ PartitionExpr   (pure, deterministic)
+//! partition_expression : VersionedPartitionShape × ScalarRuleExpr × TypedReferences ⇀ PartitionExpr   (pure, deterministic)
 
 use crate::canonical_encoding::{
     CanonicalEncode, CanonicalEncodingError, CanonicalField, CanonicalPayloadWriter,
 };
 use crate::non_negative_amount::NonNegativeAmount;
 use crate::numerical_semantics::{AccumulationError, NumericalSemanticsVersion};
-use crate::rule_reference::{ForcingRef, TransferBranchId};
+use crate::rule_expression::RuleExpr;
+use crate::rule_reference::{ExpressionValueKind, ForcingRef, TransferBranchId};
 use crate::versions::RuleIrVersion;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -66,11 +67,42 @@ impl FractionBranch {
     }
 }
 
+/// One named transfer whose amount is computed by a scalar rule expression.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpressionBranch {
+    branch: TransferBranchId,
+    expression: RuleExpr,
+}
+impl ExpressionBranch {
+    #[must_use]
+    pub fn new(branch: TransferBranchId, expression: RuleExpr) -> Self {
+        Self { branch, expression }
+    }
+    #[must_use]
+    pub fn branch(&self) -> &TransferBranchId {
+        &self.branch
+    }
+    #[must_use]
+    pub fn expression(&self) -> &RuleExpr {
+        &self.expression
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum PartitionExprError {
-    /// Fires when a fixed split names one transfer branch more than once.
-    #[error("fixed split contains duplicate branch {branch}")]
+    /// Fires when a partition names one transfer branch more than once.
+    #[error("partition contains duplicate branch {branch}")]
     DuplicateBranch { branch: TransferBranchId },
+    /// Fires when an expression-valued branch is not scalar.
+    #[error("expression branch {branch} must be scalar")]
+    NonScalarExpression { branch: TransferBranchId },
+    /// Fires when an expression-valued branch selects a different rule IR version.
+    #[error("expression branch {branch} selects a different rule IR version")]
+    ExpressionRuleIrVersionMismatch { branch: TransferBranchId },
+    /// Fires when an expression-valued branch selects different numerical semantics.
+    #[error("expression branch {branch} selects different numerical semantics")]
+    ExpressionNumericalVersionMismatch { branch: TransferBranchId },
     /// Fires when checked fraction accumulation cannot produce a finite total.
     #[error("fixed split fraction accumulation failed: {cause}")]
     FractionAccumulation {
@@ -104,6 +136,9 @@ enum PartitionNode {
         branch: TransferBranchId,
         fraction: Fraction,
     },
+    ExpressionPartition {
+        branches: Vec<ExpressionBranch>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,6 +165,9 @@ pub enum PartitionExprView<'a> {
     ConstantFractionTransfer {
         branch: &'a TransferBranchId,
         fraction: Fraction,
+    },
+    ExpressionPartition {
+        branches: &'a [ExpressionBranch],
     },
 }
 
@@ -230,6 +268,52 @@ impl PartitionExpr {
             node: PartitionNode::ConstantFractionTransfer { branch, fraction },
         })
     }
+    /// Creates a partition whose named transfers are independently computed expressions.
+    ///
+    /// Branches are stored in canonical identity order. Their evaluated sum is checked against
+    /// available stock during execution; all stock left by that sum is retained.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PartitionExprError`] for duplicate branches, non-scalar expressions, or
+    /// expressions selecting protocol versions different from the partition.
+    pub fn expression_partition(
+        rule_ir: RuleIrVersion,
+        semantics: NumericalSemanticsVersion,
+        mut branches: Vec<ExpressionBranch>,
+    ) -> Result<Self, PartitionExprError> {
+        branches.sort_by(|left, right| left.branch.cmp(&right.branch));
+        if let Some(pair) = branches
+            .windows(2)
+            .find(|pair| pair[0].branch == pair[1].branch)
+        {
+            return Err(PartitionExprError::DuplicateBranch {
+                branch: pair[0].branch.clone(),
+            });
+        }
+        for branch in &branches {
+            if branch.expression.value_kind() != ExpressionValueKind::Scalar {
+                return Err(PartitionExprError::NonScalarExpression {
+                    branch: branch.branch.clone(),
+                });
+            }
+            if branch.expression.rule_ir_version() != rule_ir {
+                return Err(PartitionExprError::ExpressionRuleIrVersionMismatch {
+                    branch: branch.branch.clone(),
+                });
+            }
+            if branch.expression.numerical_semantics_version() != semantics {
+                return Err(PartitionExprError::ExpressionNumericalVersionMismatch {
+                    branch: branch.branch.clone(),
+                });
+            }
+        }
+        Ok(Self {
+            rule_ir,
+            semantics,
+            node: PartitionNode::ExpressionPartition { branches },
+        })
+    }
     pub fn rule_ir_version(&self) -> RuleIrVersion {
         self.rule_ir
     }
@@ -256,19 +340,17 @@ impl PartitionExpr {
                     fraction: *fraction,
                 }
             }
+            PartitionNode::ExpressionPartition { branches } => {
+                PartitionExprView::ExpressionPartition { branches }
+            }
         }
     }
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum WireVersion {
-    V1,
-}
-#[derive(Serialize)]
 struct PartitionWireRef<'a> {
-    rule_ir_version: WireVersion,
-    numerical_semantics_version: WireVersion,
+    rule_ir_version: RuleIrVersion,
+    numerical_semantics_version: NumericalSemanticsVersion,
     partition: PartitionNodeRef<'a>,
 }
 #[derive(Serialize)]
@@ -289,6 +371,9 @@ enum PartitionNodeRef<'a> {
     ConstantFractionTransfer {
         branch: &'a TransferBranchId,
         fraction: f64,
+    },
+    ExpressionPartition {
+        branches: &'a [ExpressionBranch],
     },
 }
 #[derive(Serialize)]
@@ -323,10 +408,13 @@ impl Serialize for PartitionExpr {
                     fraction: fraction.value(),
                 }
             }
+            PartitionNode::ExpressionPartition { branches } => {
+                PartitionNodeRef::ExpressionPartition { branches }
+            }
         };
         PartitionWireRef {
-            rule_ir_version: WireVersion::V1,
-            numerical_semantics_version: WireVersion::V1,
+            rule_ir_version: self.rule_ir,
+            numerical_semantics_version: self.semantics,
             partition,
         }
         .serialize(serializer)
@@ -334,15 +422,10 @@ impl Serialize for PartitionExpr {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum OwnedVersion {
-    V1,
-}
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PartitionWire {
-    rule_ir_version: OwnedVersion,
-    numerical_semantics_version: OwnedVersion,
+    rule_ir_version: RuleIrVersion,
+    numerical_semantics_version: NumericalSemanticsVersion,
     partition: OwnedNode,
 }
 #[derive(Deserialize)]
@@ -364,6 +447,9 @@ enum OwnedNode {
         branch: TransferBranchId,
         fraction: f64,
     },
+    ExpressionPartition {
+        branches: Vec<ExpressionBranch>,
+    },
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -374,9 +460,8 @@ struct OwnedBranch {
 impl<'de> Deserialize<'de> for PartitionExpr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = PartitionWire::deserialize(deserializer)?;
-        let _ = (wire.rule_ir_version, wire.numerical_semantics_version);
-        let r = RuleIrVersion::V1;
-        let s = NumericalSemanticsVersion::V1;
+        let r = wire.rule_ir_version;
+        let s = wire.numerical_semantics_version;
         match wire.partition {
             OwnedNode::RetainAll => Ok(Self::retain_all(r, s)),
             OwnedNode::ReleaseAll { branch } => Ok(Self::release_all(r, s, branch)),
@@ -401,6 +486,9 @@ impl<'de> Deserialize<'de> for PartitionExpr {
                 let fraction = Fraction::new(s, fraction).map_err(serde::de::Error::custom)?;
                 Self::constant_fraction_transfer(r, s, branch, fraction)
                     .map_err(serde::de::Error::custom)
+            }
+            OwnedNode::ExpressionPartition { branches } => {
+                Self::expression_partition(r, s, branches).map_err(serde::de::Error::custom)
             }
         }
     }
@@ -448,6 +536,17 @@ impl CanonicalEncode for PartitionExpr {
                 w.write_u8(0x04);
                 w.write_string(CanonicalField::PartitionBranchIdentity, branch.as_str())?;
                 w.write_scalar(CanonicalField::PartitionFraction, fraction.value())?
+            }
+            PartitionNode::ExpressionPartition { branches } => {
+                w.write_u8(0x05);
+                w.write_count(CanonicalField::PartitionBranches, branches.len())?;
+                for branch in branches {
+                    w.write_string(
+                        CanonicalField::PartitionBranchIdentity,
+                        branch.branch.as_str(),
+                    )?;
+                    branch.expression.encode_payload_unframed(w)?;
+                }
             }
         }
         Ok(())

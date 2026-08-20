@@ -163,7 +163,10 @@ impl<'a> RuleInterpreter<'a> {
     }
     /// Evaluates the rule's scalar expression under the artifact's selected semantics.
     pub fn evaluate(&self) -> Result<f64, ExecutionError> {
-        self.eval(self.rule.expression(), None, None)?.scalar()
+        self.evaluate_expression(self.rule.expression())
+    }
+    fn evaluate_expression(&self, expression: &RuleExpr) -> Result<f64, ExecutionError> {
+        self.eval(expression, None, None)?.scalar()
     }
     fn missing(&self, kind: &'static str, identity: String) -> ExecutionError {
         ExecutionError::MissingValue {
@@ -624,8 +627,7 @@ fn evaluate_partition(
     timestep: TimestepIndex,
     available: NonNegativeAmount,
 ) -> Result<(NonNegativeAmount, Vec<Allocation>), ExecutionError> {
-    let value = RuleInterpreter::new(artifact, log, rule, timestep).evaluate()?;
-    let evaluated_amount = amount(rule, timestep, value)?;
+    let interpreter = RuleInterpreter::new(artifact, log, rule, timestep);
     let s = artifact.versions().numerical_semantics();
     let mut allocations = Vec::new();
     let mut add_branch =
@@ -656,12 +658,17 @@ fn evaluate_partition(
             Ok(())
         };
     let transfer_total = match rule.disposition().view() {
-        PartitionExprView::RetainAll => 0.0,
+        PartitionExprView::RetainAll => {
+            let _evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
+            0.0
+        }
         PartitionExprView::ReleaseAll { branch } => {
+            let evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
             add_branch(branch, evaluated_amount)?;
             evaluated_amount.value()
         }
         PartitionExprView::ConstantFractionTransfer { branch, fraction } => {
+            let evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
             let v = s.multiply(evaluated_amount.value(), fraction.value())?;
             let a = amount(rule, timestep, v)?;
             add_branch(branch, a)?;
@@ -671,6 +678,7 @@ fn evaluate_partition(
             retained_fraction: _,
             branches,
         } => {
+            let evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
             let mut total = 0.0;
             for b in branches {
                 let v = s.multiply(evaluated_amount.value(), b.fraction().value())?;
@@ -681,6 +689,7 @@ fn evaluate_partition(
             total
         }
         PartitionExprView::ExogenousSeries { branch, series } => {
+            let _evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
             let v = artifact
                 .forcings()
                 .find(|x| x.id() == series.id())
@@ -698,6 +707,16 @@ fn evaluate_partition(
             let a = amount(rule, timestep, v)?;
             add_branch(branch, a)?;
             v
+        }
+        PartitionExprView::ExpressionPartition { branches } => {
+            let mut total = 0.0;
+            for branch in branches {
+                let value = interpreter.evaluate_expression(branch.expression())?;
+                let allocation = amount(rule, timestep, value)?;
+                add_branch(branch.branch(), allocation)?;
+                total = s.add(total, value)?;
+            }
+            total
         }
     };
     if s.compare(

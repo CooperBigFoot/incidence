@@ -1096,8 +1096,25 @@ fn validate_rule_references(
         &mut table_refs,
         &mut projection_refs,
     );
-    if let PartitionExprView::ExogenousSeries { series, .. } = rule.disposition.view() {
-        forcing_refs.insert(series.id().clone());
+    match rule.disposition.view() {
+        PartitionExprView::ExogenousSeries { series, .. } => {
+            forcing_refs.insert(series.id().clone());
+        }
+        PartitionExprView::ExpressionPartition { branches } => {
+            for branch in branches {
+                collect_expression_references(
+                    branch.expression(),
+                    &mut parameters,
+                    &mut forcing_refs,
+                    &mut table_refs,
+                    &mut projection_refs,
+                );
+            }
+        }
+        PartitionExprView::RetainAll
+        | PartitionExprView::ReleaseAll { .. }
+        | PartitionExprView::FixedFractionSplit { .. }
+        | PartitionExprView::ConstantFractionTransfer { .. } => {}
     }
     for parameter in parameters {
         if !rule.parameters.contains_key(&parameter) {
@@ -1179,7 +1196,7 @@ fn validate_execution_bindings(
             }
         }
         let mut inputs = Vec::new();
-        collect_expression_inputs(rule.expression(), &mut inputs);
+        collect_rule_inputs(rule, &mut inputs);
         for reference in &inputs {
             let Some(binding) = bindings.input_binding(compartment, substance, reference.id())
             else {
@@ -1226,7 +1243,7 @@ fn validate_execution_bindings(
         let key = (binding.compartment().clone(), binding.substance().clone());
         let mut inputs = Vec::new();
         if let Some(rule) = rules.get(&key) {
-            collect_expression_inputs(rule.expression(), &mut inputs);
+            collect_rule_inputs(rule, &mut inputs);
         }
         if !inputs
             .iter()
@@ -1324,6 +1341,9 @@ fn partition_branches(disposition: &PartitionExpr) -> BTreeSet<TransferBranchId>
         } => {
             branches.extend(split.iter().map(|part| part.branch().clone()));
         }
+        PartitionExprView::ExpressionPartition { branches: split } => {
+            branches.extend(split.iter().map(|part| part.branch().clone()));
+        }
     }
     branches
 }
@@ -1384,6 +1404,18 @@ fn validate_input_source(
         });
     }
     Ok(())
+}
+
+fn collect_rule_inputs<'a>(
+    rule: &'a RuleDefinition,
+    inputs: &mut Vec<&'a crate::rule_reference::InputRef>,
+) {
+    collect_expression_inputs(rule.expression(), inputs);
+    if let PartitionExprView::ExpressionPartition { branches } = rule.disposition().view() {
+        for branch in branches {
+            collect_expression_inputs(branch.expression(), inputs);
+        }
+    }
 }
 
 fn collect_expression_inputs<'a>(
