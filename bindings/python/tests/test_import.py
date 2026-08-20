@@ -9,7 +9,7 @@ import incidence
 def test_documented_entry_points_are_importable() -> None:
     expected = {
         "CompiledModel", "compile_model", "literal", "param", "input", "forcing",
-        "projection", "add", "mul", "min", "max", "clamp", "compare", "select",
+        "projection", "add", "mul", "power", "min", "max", "clamp", "compare", "select",
         "table_lookup", "roundtrip_expression", "model_document", "rule",
     }
     assert expected <= set(incidence.__all__)

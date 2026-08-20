@@ -220,6 +220,10 @@ impl<'a> RuleInterpreter<'a> {
                 self.eval(lhs, inputs, state_params)?.scalar()?,
                 self.eval(rhs, inputs, state_params)?.scalar()?,
             )?),
+            RuleExprView::Power { lhs, rhs } => Value::Scalar(s.power(
+                self.eval(lhs, inputs, state_params)?.scalar()?,
+                self.eval(rhs, inputs, state_params)?.scalar()?,
+            )?),
             RuleExprView::Minimum { lhs, rhs } => Value::Scalar(s.minimum(
                 self.eval(lhs, inputs, state_params)?.scalar()?,
                 self.eval(rhs, inputs, state_params)?.scalar()?,

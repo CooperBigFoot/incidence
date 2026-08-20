@@ -631,6 +631,16 @@ fn mul<'py>(
     contain(|| binary(py, lhs, rhs, RuleExpr::multiply))
 }
 
+/// Author a scalar power expression.
+#[pyfunction]
+fn power<'py>(
+    py: Python<'py>,
+    base: &Bound<'_, PyAny>,
+    exponent: &Bound<'_, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    contain(|| binary(py, base, exponent, RuleExpr::power))
+}
+
 /// Author an ordered minimum.
 #[pyfunction(name = "min")]
 fn minimum<'py>(
@@ -751,6 +761,7 @@ fn initialize(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(projection, module)?)?;
     module.add_function(wrap_pyfunction!(add, module)?)?;
     module.add_function(wrap_pyfunction!(mul, module)?)?;
+    module.add_function(wrap_pyfunction!(power, module)?)?;
     module.add_function(wrap_pyfunction!(minimum, module)?)?;
     module.add_function(wrap_pyfunction!(maximum, module)?)?;
     module.add_function(wrap_pyfunction!(clamp, module)?)?;

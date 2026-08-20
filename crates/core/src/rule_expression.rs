@@ -53,6 +53,7 @@ pub enum RuleExprOperation {
     Subtract,
     Multiply,
     Divide,
+    Power,
     Minimum,
     Maximum,
     Clamp,
@@ -64,6 +65,8 @@ pub enum RuleExprOperation {
 pub enum RuleExprOperand {
     Left,
     Right,
+    Base,
+    Exponent,
     Value,
     Lower,
     Upper,
@@ -102,6 +105,7 @@ enum RuleNode {
     Subtract(Box<RuleExpr>, Box<RuleExpr>),
     Multiply(Box<RuleExpr>, Box<RuleExpr>),
     Divide(Box<RuleExpr>, Box<RuleExpr>),
+    Power(Box<RuleExpr>, Box<RuleExpr>),
     Minimum(Box<RuleExpr>, Box<RuleExpr>),
     Maximum(Box<RuleExpr>, Box<RuleExpr>),
     Clamp {
@@ -152,6 +156,10 @@ pub enum RuleExprView<'a> {
         rhs: &'a RuleExpr,
     },
     Divide {
+        lhs: &'a RuleExpr,
+        rhs: &'a RuleExpr,
+    },
+    Power {
         lhs: &'a RuleExpr,
         rhs: &'a RuleExpr,
     },
@@ -327,6 +335,32 @@ impl RuleExpr {
     pub fn divide(lhs: Self, rhs: Self) -> Result<Self, RuleExprError> {
         Self::binary(lhs, rhs, RuleExprOperation::Divide, RuleNode::Divide)
     }
+    /// Creates a scalar power expression.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuleExprError`] when an operand is not scalar or the depth limit is exceeded.
+    pub fn power(base: Self, exponent: Self) -> Result<Self, RuleExprError> {
+        Self::require(
+            &base,
+            RuleExprOperation::Power,
+            RuleExprOperand::Base,
+            ExpressionValueKind::Scalar,
+        )?;
+        Self::require(
+            &exponent,
+            RuleExprOperation::Power,
+            RuleExprOperand::Exponent,
+            ExpressionValueKind::Scalar,
+        )?;
+        let depth = Self::composite_depth(&base, &[&exponent])?;
+        Ok(Self {
+            rule_ir: base.rule_ir,
+            semantics: base.semantics,
+            node: RuleNode::Power(Box::new(base), Box::new(exponent)),
+            depth,
+        })
+    }
     /// Creates an ordered scalar minimum expression.
     ///
     /// # Errors
@@ -490,6 +524,7 @@ impl RuleExpr {
             | RuleNode::Subtract(_, _)
             | RuleNode::Multiply(_, _)
             | RuleNode::Divide(_, _)
+            | RuleNode::Power(_, _)
             | RuleNode::Minimum(_, _)
             | RuleNode::Maximum(_, _)
             | RuleNode::Clamp { .. }
@@ -517,6 +552,7 @@ impl RuleExpr {
             RuleNode::Subtract(l, r) => RuleExprView::Subtract { lhs: l, rhs: r },
             RuleNode::Multiply(l, r) => RuleExprView::Multiply { lhs: l, rhs: r },
             RuleNode::Divide(l, r) => RuleExprView::Divide { lhs: l, rhs: r },
+            RuleNode::Power(lhs, rhs) => RuleExprView::Power { lhs, rhs },
             RuleNode::Minimum(l, r) => RuleExprView::Minimum { lhs: l, rhs: r },
             RuleNode::Maximum(l, r) => RuleExprView::Maximum { lhs: l, rhs: r },
             RuleNode::Clamp {
@@ -634,6 +670,10 @@ enum RuleNodeRef<'a> {
         lhs: Box<RuleNodeRef<'a>>,
         rhs: Box<RuleNodeRef<'a>>,
     },
+    Power {
+        lhs: Box<RuleNodeRef<'a>>,
+        rhs: Box<RuleNodeRef<'a>>,
+    },
     Minimum {
         lhs: Box<RuleNodeRef<'a>>,
         rhs: Box<RuleNodeRef<'a>>,
@@ -686,6 +726,10 @@ fn node_ref(expr: &RuleExpr) -> RuleNodeRef<'_> {
         RuleNode::Divide(l, r) => RuleNodeRef::Divide {
             lhs: Box::new(node_ref(l)),
             rhs: Box::new(node_ref(r)),
+        },
+        RuleNode::Power(lhs, rhs) => RuleNodeRef::Power {
+            lhs: Box::new(node_ref(lhs)),
+            rhs: Box::new(node_ref(rhs)),
         },
         RuleNode::Minimum(l, r) => RuleNodeRef::Minimum {
             lhs: Box::new(node_ref(l)),
@@ -807,6 +851,10 @@ enum OwnedNode {
         lhs: Box<OwnedNode>,
         rhs: Box<OwnedNode>,
     },
+    Power {
+        lhs: Box<OwnedNode>,
+        rhs: Box<OwnedNode>,
+    },
     Minimum {
         lhs: Box<OwnedNode>,
         rhs: Box<OwnedNode>,
@@ -852,6 +900,7 @@ fn build_owned(node: OwnedNode) -> Result<RuleExpr, RuleExprError> {
             RuleExpr::multiply(build_owned(*lhs)?, build_owned(*rhs)?)
         }
         OwnedNode::Divide { lhs, rhs } => RuleExpr::divide(build_owned(*lhs)?, build_owned(*rhs)?),
+        OwnedNode::Power { lhs, rhs } => RuleExpr::power(build_owned(*lhs)?, build_owned(*rhs)?),
         OwnedNode::Minimum { lhs, rhs } => {
             RuleExpr::minimum(build_owned(*lhs)?, build_owned(*rhs)?)
         }
@@ -963,6 +1012,7 @@ fn encode_node(
             w.write_string(CanonicalField::RuleTableIdentity, table.id().as_str())?;
             encode_node(input, w)?
         }
+        RuleNode::Power(base, exponent) => encode_binary(0x0f, base, exponent, w)?,
     }
     Ok(())
 }

@@ -917,6 +917,7 @@ fn walk_update(
         | RuleExprView::Subtract { lhs, rhs }
         | RuleExprView::Multiply { lhs, rhs }
         | RuleExprView::Divide { lhs, rhs }
+        | RuleExprView::Power { lhs, rhs }
         | RuleExprView::Minimum { lhs, rhs }
         | RuleExprView::Maximum { lhs, rhs }
         | RuleExprView::Comparison { lhs, rhs, .. } => {
