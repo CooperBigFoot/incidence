@@ -732,11 +732,12 @@ fn evaluate_partition(
             requested_bits: transfer_total.to_bits(),
         });
     }
-    let retained = amount(
-        rule,
-        timestep,
-        s.subtract(available.value(), transfer_total)?,
-    )?;
+    let retained_value = allocations
+        .iter()
+        .try_fold(available.value(), |remaining, allocation| {
+            s.subtract(remaining, allocation.amount().value())
+        })?;
+    let retained = amount(rule, timestep, retained_value)?;
     Ok((retained, allocations))
 }
 fn amount(

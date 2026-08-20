@@ -256,7 +256,7 @@ pub fn commit_disposition(
                 requested_bits: partitioned.to_bits(),
             });
         }
-        if partitioned.to_bits() != available.value().to_bits() {
+        if entry.retained.value().to_bits() != source_remaining.to_bits() {
             return Err(TransactionError::IncompletePartition {
                 compartment: compartment.clone(),
                 substance: substance.clone(),
