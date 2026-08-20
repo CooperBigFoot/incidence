@@ -67,3 +67,17 @@ def test_small_held_sweep_sends_only_parameter_data_after_compile() -> None:
         "parameter_run_seconds", "presence_read_seconds", "trial_seconds"
     }
     assert all(duration >= 0 for duration in sample.values())
+
+
+def test_committed_record_names_the_code_that_can_reproduce_it() -> None:
+    held = load_held_record(HELD)
+    source_revision = held["procedure"]["source_revision"]
+    benchmark_path = "bindings/python/benchmarks/sweep_held_model.py"
+    benchmark_at_source = subprocess.run(
+        ["git", "show", f"{source_revision}:{benchmark_path}"],
+        cwd=Path(__file__).parents[3],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    assert benchmark_at_source == (ROOT / "benchmarks" / "sweep_held_model.py").read_bytes()
