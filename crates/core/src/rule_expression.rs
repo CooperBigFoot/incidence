@@ -605,11 +605,6 @@ impl RuleExpr {
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
-enum WireVersion {
-    V1,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
 enum WireComparison {
     Equal,
     NotEqual,
@@ -632,8 +627,8 @@ impl From<ScalarComparison> for WireComparison {
 }
 #[derive(Serialize)]
 struct RuleWireRef<'a> {
-    rule_ir_version: WireVersion,
-    numerical_semantics_version: WireVersion,
+    rule_ir_version: RuleIrVersion,
+    numerical_semantics_version: NumericalSemanticsVersion,
     expression: RuleNodeRef<'a>,
 }
 #[derive(Serialize)]
@@ -775,19 +770,14 @@ fn node_ref(expr: &RuleExpr) -> RuleNodeRef<'_> {
 impl Serialize for RuleExpr {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         RuleWireRef {
-            rule_ir_version: WireVersion::V1,
-            numerical_semantics_version: WireVersion::V1,
+            rule_ir_version: self.rule_ir,
+            numerical_semantics_version: self.semantics,
             expression: node_ref(self),
         }
         .serialize(serializer)
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum OwnedVersion {
-    V1,
-}
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum OwnedComparison {
@@ -813,8 +803,8 @@ impl From<OwnedComparison> for ScalarComparison {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuleWire {
-    rule_ir_version: OwnedVersion,
-    numerical_semantics_version: OwnedVersion,
+    rule_ir_version: RuleIrVersion,
+    numerical_semantics_version: NumericalSemanticsVersion,
     expression: OwnedNode,
 }
 #[derive(Deserialize)]
@@ -883,63 +873,90 @@ enum OwnedNode {
         input: Box<OwnedNode>,
     },
 }
-fn build_owned(node: OwnedNode) -> Result<RuleExpr, RuleExprError> {
-    let r = RuleIrVersion::V1;
-    let s = NumericalSemanticsVersion::V1;
+fn build_owned(
+    node: OwnedNode,
+    rule_ir: RuleIrVersion,
+    semantics: NumericalSemanticsVersion,
+) -> Result<RuleExpr, RuleExprError> {
     match node {
-        OwnedNode::Input { reference } => Ok(RuleExpr::input(r, s, reference)),
-        OwnedNode::Parameter { reference } => Ok(RuleExpr::parameter(r, s, reference)),
-        OwnedNode::Forcing { reference } => Ok(RuleExpr::forcing(r, s, reference)),
-        OwnedNode::Projection { reference } => Ok(RuleExpr::projection(r, s, reference)),
-        OwnedNode::Literal { value } => RuleExpr::literal(r, s, value),
-        OwnedNode::Add { lhs, rhs } => RuleExpr::add(build_owned(*lhs)?, build_owned(*rhs)?),
-        OwnedNode::Subtract { lhs, rhs } => {
-            RuleExpr::subtract(build_owned(*lhs)?, build_owned(*rhs)?)
+        OwnedNode::Input { reference } => Ok(RuleExpr::input(rule_ir, semantics, reference)),
+        OwnedNode::Parameter { reference } => {
+            Ok(RuleExpr::parameter(rule_ir, semantics, reference))
         }
-        OwnedNode::Multiply { lhs, rhs } => {
-            RuleExpr::multiply(build_owned(*lhs)?, build_owned(*rhs)?)
+        OwnedNode::Forcing { reference } => Ok(RuleExpr::forcing(rule_ir, semantics, reference)),
+        OwnedNode::Projection { reference } => {
+            Ok(RuleExpr::projection(rule_ir, semantics, reference))
         }
-        OwnedNode::Divide { lhs, rhs } => RuleExpr::divide(build_owned(*lhs)?, build_owned(*rhs)?),
-        OwnedNode::Power { lhs, rhs } => RuleExpr::power(build_owned(*lhs)?, build_owned(*rhs)?),
-        OwnedNode::Minimum { lhs, rhs } => {
-            RuleExpr::minimum(build_owned(*lhs)?, build_owned(*rhs)?)
-        }
-        OwnedNode::Maximum { lhs, rhs } => {
-            RuleExpr::maximum(build_owned(*lhs)?, build_owned(*rhs)?)
-        }
+        OwnedNode::Literal { value } => RuleExpr::literal(rule_ir, semantics, value),
+        OwnedNode::Add { lhs, rhs } => RuleExpr::add(
+            build_owned(*lhs, rule_ir, semantics)?,
+            build_owned(*rhs, rule_ir, semantics)?,
+        ),
+        OwnedNode::Subtract { lhs, rhs } => RuleExpr::subtract(
+            build_owned(*lhs, rule_ir, semantics)?,
+            build_owned(*rhs, rule_ir, semantics)?,
+        ),
+        OwnedNode::Multiply { lhs, rhs } => RuleExpr::multiply(
+            build_owned(*lhs, rule_ir, semantics)?,
+            build_owned(*rhs, rule_ir, semantics)?,
+        ),
+        OwnedNode::Divide { lhs, rhs } => RuleExpr::divide(
+            build_owned(*lhs, rule_ir, semantics)?,
+            build_owned(*rhs, rule_ir, semantics)?,
+        ),
+        OwnedNode::Power { lhs, rhs } => RuleExpr::power(
+            build_owned(*lhs, rule_ir, semantics)?,
+            build_owned(*rhs, rule_ir, semantics)?,
+        ),
+        OwnedNode::Minimum { lhs, rhs } => RuleExpr::minimum(
+            build_owned(*lhs, rule_ir, semantics)?,
+            build_owned(*rhs, rule_ir, semantics)?,
+        ),
+        OwnedNode::Maximum { lhs, rhs } => RuleExpr::maximum(
+            build_owned(*lhs, rule_ir, semantics)?,
+            build_owned(*rhs, rule_ir, semantics)?,
+        ),
         OwnedNode::Clamp {
             value,
             lower,
             upper,
         } => RuleExpr::clamp(
-            build_owned(*value)?,
-            build_owned(*lower)?,
-            build_owned(*upper)?,
+            build_owned(*value, rule_ir, semantics)?,
+            build_owned(*lower, rule_ir, semantics)?,
+            build_owned(*upper, rule_ir, semantics)?,
         ),
         OwnedNode::Comparison {
             comparison,
             lhs,
             rhs,
-        } => RuleExpr::comparison(comparison.into(), build_owned(*lhs)?, build_owned(*rhs)?),
+        } => RuleExpr::comparison(
+            comparison.into(),
+            build_owned(*lhs, rule_ir, semantics)?,
+            build_owned(*rhs, rule_ir, semantics)?,
+        ),
         OwnedNode::Select {
             condition,
             when_true,
             when_false,
         } => RuleExpr::select(
-            build_owned(*condition)?,
-            build_owned(*when_true)?,
-            build_owned(*when_false)?,
+            build_owned(*condition, rule_ir, semantics)?,
+            build_owned(*when_true, rule_ir, semantics)?,
+            build_owned(*when_false, rule_ir, semantics)?,
         ),
         OwnedNode::InterpolatedTable { table, input } => {
-            RuleExpr::interpolated_table(table, build_owned(*input)?)
+            RuleExpr::interpolated_table(table, build_owned(*input, rule_ir, semantics)?)
         }
     }
 }
 impl<'de> Deserialize<'de> for RuleExpr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = RuleWire::deserialize(deserializer)?;
-        let _ = (wire.rule_ir_version, wire.numerical_semantics_version);
-        build_owned(wire.expression).map_err(serde::de::Error::custom)
+        build_owned(
+            wire.expression,
+            wire.rule_ir_version,
+            wire.numerical_semantics_version,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
