@@ -80,11 +80,14 @@ end-to-end harness probe; it does not repeat the long measurement.
 ## Held-model sweep comparison
 
 `benchmarks/sweep_held_model.py` compiles the IPB6 basin document once, then sends only a typed
-parameter record and run id for each trial. It records one decode-and-validate operation and zero
+parameter record and run id for each trial. It records one full-document decode-and-validate operation and zero
 forcing values crossing the boundary after compilation. Execution releases the GIL so its 12
 threads match the committed baseline's worker count while sharing one held Rust model.
 `benchmarks/sweep-held-model-v1.json` reports both the IPB6 baseline figures and the held-model
-figures on the same machine.
+figures on the same machine. The recorded held sweep removes repeated document decoding but is
+slower overall on that machine: 2,014.48 seconds versus the naive baseline's 1,182.21 seconds.
+The record retains both wall-time and phase totals rather than presenting flat decode work as a
+total-speed claim.
 
 ```console
 uv run --no-sync maturin develop --uv --release -q

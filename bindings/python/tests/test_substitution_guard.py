@@ -58,3 +58,21 @@ def test_unknown_parameter_is_refused_without_changing_held_model() -> None:
         )
 
     _run_unchanged(model, 2)
+
+
+def test_a_batch_with_one_invalid_target_is_atomic() -> None:
+    model = _held_model()
+    digest = model.model_digest
+    valid = {
+        "compartment": "basin-00",
+        "substance": "water",
+        "parameter": "release-coefficient",
+        "value": 0.4,
+    }
+    invalid = {**valid, "parameter": "forcing-00"}
+
+    with pytest.raises(ValueError, match="forcing-00.*not substitutable"):
+        model.run(bytes(16), substitutions=[valid, invalid])
+
+    assert model.model_digest == digest
+    _run_unchanged(model, 3)

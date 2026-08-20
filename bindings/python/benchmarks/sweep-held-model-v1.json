@@ -1,11 +1,17 @@
 {
   "comparison": {
-    "held_decode_validate_operations": 1,
     "held_decode_validate_total_seconds": 0.0016405409551225603,
+    "held_full_document_decode_validate_operations": 1,
     "held_full_document_submissions": 1,
-    "naive_decode_validate_operations": 1000,
+    "held_parameter_run_total_seconds": 24053.423599779606,
+    "held_trial_total_seconds": 24076.27561549237,
+    "held_wall_clock_seconds": 2014.4832862499752,
     "naive_decode_validate_total_seconds": 1.6244662597891875,
-    "naive_full_document_submissions": 1000
+    "naive_full_document_decode_validate_operations": 1000,
+    "naive_full_document_submissions": 1000,
+    "naive_run_total_seconds": 14114.05233492452,
+    "naive_trial_total_seconds": 14125.582043028786,
+    "naive_wall_clock_seconds": 1182.2120961670298
   },
   "execution": {
     "wall_clock_seconds": 2014.4832862499752,
@@ -64,10 +70,10 @@
   },
   "workload": {
     "compartments": 50,
-    "decode_validate_operations": 1,
     "forcing_series": 20,
     "forcing_values_crossed_after_compile": 0,
     "forcing_values_crossed_initially": 43820,
+    "full_document_decode_validate_operations": 1,
     "full_document_submissions": 1,
     "horizon_steps": 2191,
     "parameter_submissions": 1000,
