@@ -10,12 +10,22 @@ use incidence_core::ledger::{RunId, replay_with_artifact};
 
 #[test]
 fn all_seven_hydrology_rules_run_to_completion_in_one_model() {
-    let artifact = hydrology::HydrologyModelDocument::fixture().artifact();
+    let artifact = hydrology::fixture()
+        .artifact()
+        .expect("public hydrology document");
     assert_eq!(artifact.rules().len(), hydrology::RULE_COMPARTMENTS.len());
 
     let log = execute_model(&artifact, RunId::from_bytes([0x71; 16]))
         .unwrap_or_else(|error| panic!("hydrology model failed: {error}"));
     assert!(log.is_sealed());
+    assert_eq!(
+        log.digest().to_hex(),
+        "e2757681d27cde03f15ba2cfd82ccd44613160a57c9e5cc33f96d3853bfdb103"
+    );
+    assert_eq!(
+        artifact.digest().to_hex(),
+        "f74f3c68ef7cda21d9ec3dac6ce1c509f3599d1fc5c37de53dccb8a3afeb9139"
+    );
     replay_with_artifact(&log, &artifact)
         .unwrap_or_else(|error| panic!("completed fixture did not replay: {error}"));
 

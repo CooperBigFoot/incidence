@@ -37,12 +37,10 @@ fn rejects_projection_fact_selectors_outside_artifact_domains() {
         RuleIrVersion::V1,
         NumericalSemanticsVersion::V1,
         projection_id.clone(),
-        ProjectionSource::AuthoritativeFact(
-            AuthoritativeFactSelector::IncomingTransferAmount {
-                compartment: missing,
-                substance: water.clone(),
-            },
-        ),
+        ProjectionSource::AuthoritativeFact(AuthoritativeFactSelector::IncomingTransferAmount {
+            compartment: missing,
+            substance: water.clone(),
+        }),
         1,
     )
     .expect("projection is internally valid");

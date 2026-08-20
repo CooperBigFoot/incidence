@@ -203,6 +203,52 @@ impl RuleDefinition {
     }
 }
 
+/// One scalar replacement addressed only to a declared rule parameter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuleParameterSubstitution {
+    compartment: CompartmentId,
+    substance: SubstanceId,
+    parameter: ParameterId,
+    value: f64,
+}
+
+impl RuleParameterSubstitution {
+    #[must_use]
+    pub fn new(
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        parameter: ParameterId,
+        value: f64,
+    ) -> Self {
+        Self {
+            compartment,
+            substance,
+            parameter,
+            value,
+        }
+    }
+
+    #[must_use]
+    pub fn compartment(&self) -> &CompartmentId {
+        &self.compartment
+    }
+
+    #[must_use]
+    pub fn substance(&self) -> &SubstanceId {
+        &self.substance
+    }
+
+    #[must_use]
+    pub fn parameter(&self) -> &ParameterId {
+        &self.parameter
+    }
+
+    #[must_use]
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+}
+
 /// A SHA-256 content address for canonical model-artifact bytes.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ModelDigest([u8; 32]);
@@ -361,6 +407,126 @@ impl ModelArtifact {
     pub fn units(&self) -> impl ExactSizeIterator<Item = (&SubstanceId, &UnitId)> {
         self.units.iter()
     }
+
+    /// Derives an artifact by replacing declared rule parameters and recomputing its identity.
+    ///
+    /// The source artifact is never mutated. This is the only supported model substitution path;
+    /// forcings, topology, initial stocks, calendar fields, and every other artifact component are
+    /// therefore not substitutable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuleParameterSubstitutionError`] when a coordinate is repeated, does not name a
+    /// declared rule parameter, has a non-finite value, or cannot be canonically encoded.
+    pub fn with_rule_parameter_substitutions(
+        &self,
+        substitutions: impl IntoIterator<Item = RuleParameterSubstitution>,
+    ) -> Result<Self, RuleParameterSubstitutionError> {
+        let mut derived = self.clone();
+        let mut addressed = BTreeSet::new();
+        for substitution in substitutions {
+            let coordinate = (
+                substitution.compartment.clone(),
+                substitution.substance.clone(),
+                substitution.parameter.clone(),
+            );
+            if !addressed.insert(coordinate.clone()) {
+                return Err(RuleParameterSubstitutionError::DuplicateTarget {
+                    compartment: coordinate.0,
+                    substance: coordinate.1,
+                    parameter: coordinate.2,
+                });
+            }
+            let rule_coordinate = (
+                substitution.compartment.clone(),
+                substitution.substance.clone(),
+            );
+            let rule = derived.rules.get_mut(&rule_coordinate).ok_or_else(|| {
+                RuleParameterSubstitutionError::RuleNotFound {
+                    compartment: substitution.compartment.clone(),
+                    substance: substitution.substance.clone(),
+                }
+            })?;
+            let normalized = rule
+                .expression
+                .numerical_semantics_version()
+                .normalize(substitution.value)
+                .map_err(|_| RuleParameterSubstitutionError::NonFiniteValue {
+                    compartment: substitution.compartment.clone(),
+                    substance: substitution.substance.clone(),
+                    parameter: substitution.parameter.clone(),
+                    bits: substitution.value.to_bits(),
+                })?;
+            let value = rule
+                .parameters
+                .get_mut(&substitution.parameter)
+                .ok_or_else(|| RuleParameterSubstitutionError::ParameterNotDeclared {
+                    compartment: substitution.compartment.clone(),
+                    substance: substitution.substance.clone(),
+                    parameter: substitution.parameter.clone(),
+                })?;
+            *value = normalized.to_bits();
+        }
+        derived
+            .refresh_identity()
+            .map_err(|source| RuleParameterSubstitutionError::CanonicalEncoding { source })?;
+        Ok(derived)
+    }
+
+    fn refresh_identity(&mut self) -> Result<(), CanonicalEncodingError> {
+        let bytes = self.versions.canonical_encoding.encode(self)?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"incidence:model-artifact:v1\0");
+        hasher.update(&bytes);
+        let hash: [u8; 32] = hasher.finalize().into();
+        self.canonical_bytes = bytes.into_boxed_slice();
+        self.digest = ModelDigest(hash);
+        Ok(())
+    }
+}
+
+/// Reports why a held artifact could not derive a parameter-substituted artifact.
+#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+pub enum RuleParameterSubstitutionError {
+    /// Fires when one substitution coordinate occurs more than once.
+    #[error(
+        "rule parameter substitution repeats compartment `{compartment}`, substance `{substance}`, parameter `{parameter}`"
+    )]
+    DuplicateTarget {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        parameter: ParameterId,
+    },
+    /// Fires when the addressed compartment and substance do not own a rule.
+    #[error(
+        "compartment `{compartment}`, substance `{substance}` has no rule; only declared rule parameters are substitutable"
+    )]
+    RuleNotFound {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+    },
+    /// Fires when the addressed rule does not declare the named parameter.
+    #[error(
+        "parameter `{parameter}` is not declared by compartment `{compartment}`, substance `{substance}` and is not substitutable"
+    )]
+    ParameterNotDeclared {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        parameter: ParameterId,
+    },
+    /// Fires when a replacement is NaN or infinite under the artifact's numerical semantics.
+    #[error(
+        "non-finite substitution for parameter `{parameter}` in compartment `{compartment}`, substance `{substance}`: bits {bits:#018x}"
+    )]
+    NonFiniteValue {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        parameter: ParameterId,
+        bits: u64,
+    },
+    /// Fires when the derived artifact cannot be represented by its canonical encoding version.
+    #[error("parameter-substituted artifact cannot be canonically encoded: {source}")]
+    CanonicalEncoding { source: CanonicalEncodingError },
 }
 
 /// Builder for a model artifact's optional collections and version selection.
@@ -583,13 +749,7 @@ impl ModelArtifactBuilder {
             canonical_bytes: Box::new([]),
             digest: ModelDigest([0; 32]),
         };
-        let bytes = artifact.versions.canonical_encoding.encode(&artifact)?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"incidence:model-artifact:v1\0");
-        hasher.update(&bytes);
-        let hash: [u8; 32] = hasher.finalize().into();
-        artifact.canonical_bytes = bytes.into_boxed_slice();
-        artifact.digest = ModelDigest(hash);
+        artifact.refresh_identity()?;
         Ok(artifact)
     }
 }
