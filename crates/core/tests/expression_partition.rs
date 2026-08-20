@@ -176,3 +176,11 @@ fn expression_partition_roundtrips_in_canonical_branch_order() {
     let decoded: PartitionExpr = serde_json::from_value(encoded).expect("deserializable partition");
     assert_eq!(decoded, partition);
 }
+
+#[test]
+fn expression_partition_accepts_conservative_decimal_amounts() {
+    let artifact = artifact([0.6, 0.7]);
+
+    execute_model(&artifact, RunId::from_bytes([0x23; 16]))
+        .expect("a conservative expression partition must execute");
+}
