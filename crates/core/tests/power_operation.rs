@@ -69,3 +69,18 @@ fn power_operation_computes_exactly_through_the_interpreter() {
         state => panic!("power transfer must be present, got {state:?}"),
     }
 }
+
+#[test]
+fn power_operation_preserves_v2_numerical_semantics_when_roundtripped() {
+    let literal = |value| {
+        RuleExpr::literal(RuleIrVersion::V1, NumericalSemanticsVersion::V2, value)
+            .expect("finite V2 power fixture literal")
+    };
+    let expression = RuleExpr::power(literal(6.25), literal(0.5)).expect("V2 power expression");
+
+    let encoded = serde_json::to_value(&expression).expect("encode V2 power expression");
+    assert_eq!(encoded["numerical_semantics_version"], "v2");
+
+    let decoded: RuleExpr = serde_json::from_value(encoded).expect("decode V2 power expression");
+    assert_eq!(decoded, expression);
+}
