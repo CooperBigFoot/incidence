@@ -6,8 +6,8 @@
 use incidence_core::dense_projection::DenseTransferProjection;
 use incidence_core::execution::execute_model;
 use incidence_core::identity::{CompartmentId, SubstanceId};
-use incidence_core::ledger::{AuthoritativeLog, RunId};
-use incidence_core::model_artifact::ModelArtifact;
+use incidence_core::ledger::{AuthoritativeLog, RunId, replay_with_artifact};
+use incidence_core::model_artifact::{ModelArtifact, RuleParameterSubstitution};
 use incidence_core::model_document::ModelDocument;
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::numerical_semantics::{NumericalSemanticsVersion, ScalarComparison};
@@ -26,6 +26,7 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use std::any::Any;
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 
 const MAX_DOCUMENT_NESTING: usize = 256;
 const MAX_SERIES_LENGTH: u64 = 10_000_000;
@@ -33,13 +34,13 @@ const MAX_SERIES_LENGTH: u64 = 10_000_000;
 /// An immutable model validated and owned by the Rust core.
 #[pyclass(frozen, module = "incidence._incidence")]
 struct CompiledModel {
-    artifact: ModelArtifact,
+    artifact: Arc<ModelArtifact>,
 }
 
 /// A completed authoritative run bound to the exact artifact that produced it.
 #[pyclass(frozen, module = "incidence._incidence")]
 struct CompletedRun {
-    artifact: ModelArtifact,
+    artifact: Arc<ModelArtifact>,
     log: AuthoritativeLog,
 }
 
@@ -215,16 +216,101 @@ fn append_state(
     }
 }
 
+fn parse_substitutions(
+    substitutions: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Vec<RuleParameterSubstitution>> {
+    let Some(substitutions) = substitutions.filter(|value| !value.is_none()) else {
+        return Ok(Vec::new());
+    };
+    let mut parsed = Vec::new();
+    for (index, item) in substitutions.try_iter()?.enumerate() {
+        let item = item?;
+        let target = item.repr()?.to_string_lossy().into_owned();
+        let mapping = item.cast::<PyDict>().map_err(|_| {
+            PyValueError::new_err(format!(
+                "substitution target at index {index} `{target}` is not substitutable; expected a mapping with exactly compartment, substance, parameter, and value"
+            ))
+        })?;
+        let expected = ["compartment", "substance", "parameter", "value"];
+        let keys = mapping
+            .keys()
+            .iter()
+            .map(|key| key.extract::<String>())
+            .collect::<PyResult<HashSet<_>>>()?;
+        if keys.len() != expected.len() || expected.iter().any(|key| !keys.contains(*key)) {
+            return Err(PyValueError::new_err(format!(
+                "substitution target at index {index} `{target}` is not substitutable; expected exactly compartment, substance, parameter, and value"
+            )));
+        }
+        let field = |name: &str| {
+            mapping.get_item(name)?.ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "substitution target at index {index} `{target}` is missing `{name}`"
+                ))
+            })
+        };
+        let compartment_text = field("compartment")?.extract::<String>()?;
+        let substance_text = field("substance")?.extract::<String>()?;
+        let parameter_text = field("parameter")?.extract::<String>()?;
+        let value = field("value")?.extract::<f64>()?;
+        let compartment = CompartmentId::parse(&compartment_text).map_err(|error| {
+            PyValueError::new_err(format!(
+                "substitution target compartment `{compartment_text}` is not substitutable: {error}"
+            ))
+        })?;
+        let substance = SubstanceId::parse(&substance_text).map_err(|error| {
+            PyValueError::new_err(format!(
+                "substitution target substance `{substance_text}` is not substitutable: {error}"
+            ))
+        })?;
+        let parameter = ParameterId::parse(&parameter_text).map_err(|error| {
+            PyValueError::new_err(format!(
+                "substitution target parameter `{parameter_text}` is not substitutable: {error}"
+            ))
+        })?;
+        parsed.push(RuleParameterSubstitution::new(
+            compartment,
+            substance,
+            parameter,
+            value,
+        ));
+    }
+    Ok(parsed)
+}
+
 #[pymethods]
 impl CompiledModel {
-    /// Execute the validated model to its declared horizon and seal its authoritative log.
-    fn run(&self, run_id: &Bound<'_, PyAny>) -> PyResult<CompletedRun> {
+    /// The content digest of the unchanged held artifact.
+    #[getter]
+    fn model_digest(&self) -> String {
+        self.artifact.digest().to_hex()
+    }
+
+    /// Execute the held model with optional declared-rule-parameter replacements.
+    #[pyo3(signature = (run_id, *, substitutions = None))]
+    fn run(
+        &self,
+        py: Python<'_>,
+        run_id: &Bound<'_, PyAny>,
+        substitutions: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<CompletedRun> {
         contain(|| {
-            let log = execute_model(&self.artifact, parse_run_id(run_id)?)
-                .map_err(|error| PyValueError::new_err(error.to_string()))?;
-            Ok(CompletedRun {
-                artifact: self.artifact.clone(),
-                log,
+            let run_id = parse_run_id(run_id)?;
+            let substitutions = parse_substitutions(substitutions)?;
+            let held_artifact = self.artifact.clone();
+            py.detach(move || {
+                let artifact = if substitutions.is_empty() {
+                    held_artifact
+                } else {
+                    Arc::new(
+                        held_artifact
+                            .with_rule_parameter_substitutions(substitutions)
+                            .map_err(|error| PyValueError::new_err(error.to_string()))?,
+                    )
+                };
+                let log = execute_model(&artifact, run_id)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))?;
+                Ok(CompletedRun { artifact, log })
             })
         })
     }
@@ -232,6 +318,21 @@ impl CompiledModel {
 
 #[pymethods]
 impl CompletedRun {
+    /// The digest of the exact base or parameter-substituted artifact used by this run.
+    #[getter]
+    fn model_digest(&self) -> String {
+        self.artifact.digest().to_hex()
+    }
+
+    /// Replay this run against another run's artifact, rejecting any digest mismatch.
+    fn replay_against(&self, other: &CompletedRun) -> PyResult<()> {
+        contain(|| {
+            replay_with_artifact(&self.log, &other.artifact)
+                .map(|_| ())
+                .map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+
     /// Read one dense transfer amount series with a presence state for every requested timestep.
     #[pyo3(signature = (compartment, substance, *, direction = "outgoing", first = None, last = None))]
     fn transfer_series(
@@ -370,7 +471,9 @@ fn compile_document(document: &Bound<'_, PyAny>) -> PyResult<CompiledModel> {
     let artifact = decoded
         .into_artifact()
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    Ok(CompiledModel { artifact })
+    Ok(CompiledModel {
+        artifact: Arc::new(artifact),
+    })
 }
 
 /// Decode and validate a complete plain-data model document.

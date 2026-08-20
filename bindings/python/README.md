@@ -17,7 +17,13 @@ assert len(release.timesteps) == len(release.values) == len(release.presence)
 - `compile_model(document)` decodes a plain-data Python value through Serde into the public Rust
   `ModelDocument`, then validates it into an opaque `CompiledModel`.
 - `CompiledModel` holds the validated core artifact. `CompiledModel.run(run_id)` executes it and
-  returns an opaque sealed `CompletedRun`.
+  returns an opaque sealed `CompletedRun`. The overload
+  `run(run_id, substitutions=[{"compartment": ..., "substance": ..., "parameter": ..., "value": ...}])`
+  derives a run artifact by changing only declared scalar rule parameters. The held model remains
+  immutable. Any other target is refused as not substitutable.
+- `CompiledModel.model_digest` names the held artifact. `CompletedRun.model_digest` names the exact
+  derived artifact used for that run. `CompletedRun.replay_against(other)` uses authoritative core
+  replay and rejects cross-artifact logs with the model digest mismatch.
 - `CompletedRun.transfer_series(...)` returns a `PresenceSeries`. The result carries timestep,
   value, and presence arrays of equal length. Dry modelled timesteps contain `0.0` with
   `"present"`; positions outside the horizon contain `None` with `"absent"`; substances outside
@@ -70,3 +76,17 @@ PYTHONPATH=. uv run --no-sync python -m benchmarks.sweep_baseline --workers 12
 
 The normal pytest target validates the committed 1,000-trial record and performs a small
 end-to-end harness probe; it does not repeat the long measurement.
+
+## Held-model sweep comparison
+
+`benchmarks/sweep_held_model.py` compiles the IPB6 basin document once, then sends only a typed
+parameter record and run id for each trial. It records one decode-and-validate operation and zero
+forcing values crossing the boundary after compilation. Execution releases the GIL so its 12
+threads match the committed baseline's worker count while sharing one held Rust model.
+`benchmarks/sweep-held-model-v1.json` reports both the IPB6 baseline figures and the held-model
+figures on the same machine.
+
+```console
+uv run --no-sync maturin develop --uv --release -q
+PYTHONPATH=. uv run --no-sync python -m benchmarks.sweep_held_model --trials 1000 --workers 12
+```
