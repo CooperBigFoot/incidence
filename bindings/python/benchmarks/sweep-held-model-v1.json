@@ -1,0 +1,79 @@
+{
+  "comparison": {
+    "held_decode_validate_operations": 1,
+    "held_decode_validate_total_seconds": 0.0016405409551225603,
+    "held_full_document_submissions": 1,
+    "naive_decode_validate_operations": 1000,
+    "naive_decode_validate_total_seconds": 1.6244662597891875,
+    "naive_full_document_submissions": 1000
+  },
+  "execution": {
+    "wall_clock_seconds": 2014.4832862499752,
+    "workers": 12
+  },
+  "initial_decode_validate_seconds": 0.0016405409551225603,
+  "machine": {
+    "logical_cpu_count": 16,
+    "machine": "arm64",
+    "node": "Nicolass-MacBook-Pro-2.local",
+    "platform": "macOS-15.7.3-arm64-arm-64bit-Mach-O",
+    "processor": "arm"
+  },
+  "phases": {
+    "parameter_run_seconds": {
+      "maximum_seconds": 48.08970574999694,
+      "mean_seconds": 24.053423599779606,
+      "median_seconds": 22.839547937503085,
+      "minimum_seconds": 15.4846461659763,
+      "p95_seconds": 35.20117170899175,
+      "total_seconds": 24053.423599779606
+    },
+    "presence_read_seconds": {
+      "maximum_seconds": 0.22282179101603106,
+      "mean_seconds": 0.022619106068683323,
+      "median_seconds": 0.02019847949850373,
+      "minimum_seconds": 0.0065727499895729125,
+      "p95_seconds": 0.03453629196155816,
+      "total_seconds": 22.619106068683323
+    },
+    "trial_seconds": {
+      "maximum_seconds": 48.19433716702042,
+      "mean_seconds": 24.07627561549237,
+      "median_seconds": 22.86015068751294,
+      "minimum_seconds": 15.491317540989257,
+      "p95_seconds": 35.220475833979435,
+      "total_seconds": 24076.27561549237
+    }
+  },
+  "procedure": {
+    "baseline_schema": "incidence.sweep-baseline.v1",
+    "baseline_source_revision": "d1d453a0d0af65ba259993588ed15d9cc6dc9038",
+    "build_profile": "release",
+    "reproduction_command": "uv run --no-sync maturin develop --uv --release -q && PYTHONPATH=. uv run --no-sync python -m benchmarks.sweep_held_model --trials 1000 --workers 12",
+    "source_revision": "be8f8425c96c7b9ee3e3ee7eaf70ea564d096f63"
+  },
+  "recorded_at_utc": "2026-08-20T13:04:48.963525+00:00",
+  "schema": "incidence.sweep-held-model.v1",
+  "toolchains": {
+    "cargo": "cargo 1.93.1 (083ac5135 2025-12-15)",
+    "maturin": "maturin 1.14.1",
+    "python": "3.13.8 (main, Oct  7 2025, 16:19:32) [Clang 20.1.4 ]",
+    "python_implementation": "CPython",
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "uv": "uv 0.12.1 (329541a50 2026-07-31 aarch64-apple-darwin)"
+  },
+  "workload": {
+    "compartments": 50,
+    "decode_validate_operations": 1,
+    "forcing_series": 20,
+    "forcing_values_crossed_after_compile": 0,
+    "forcing_values_crossed_initially": 43820,
+    "full_document_submissions": 1,
+    "horizon_steps": 2191,
+    "parameter_submissions": 1000,
+    "parameter_varied": "basin-00.release-coefficient",
+    "presence_reads": 1000,
+    "runs": 1000,
+    "trials": 1000
+  }
+}
