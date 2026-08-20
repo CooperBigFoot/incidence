@@ -48,3 +48,25 @@ Expression helpers such as `literal`, `param`, `input`, `forcing`, `projection`,
 constructors and return only JSON-serialisable dictionaries. `model_document`, `rule`,
 `retain_all`, and `release_all` assemble the surrounding document shape without duplicating
 domain validation. `compile_model` remains the single validation entry point.
+
+
+## Naive sweep baseline
+
+`benchmarks/sweep_baseline.py` is the reproducible full-document baseline for parameter sweeps.
+Every trial authors and submits a fresh 50-compartment document containing 2,191 daily steps and
+20 forcing series. It then calls `compile_model`, runs the model, and reads a
+presence-carrying result. The default is 1,000 trials. The committed
+`benchmarks/sweep-baseline-v1.json` records phase timings, wall time, machine identity, and Python,
+Rust, uv, and maturin versions. Its versioned schema and `load_record` function are the input for
+the held-model comparison.
+
+Build the release extension before recording. Use more than one worker only when the held-model
+comparison will use the same worker count:
+
+```console
+uv run --no-sync maturin develop --uv --release -q
+PYTHONPATH=. uv run --no-sync python -m benchmarks.sweep_baseline --workers 12
+```
+
+The normal pytest target validates the committed 1,000-trial record and performs a small
+end-to-end harness probe; it does not repeat the long measurement.
