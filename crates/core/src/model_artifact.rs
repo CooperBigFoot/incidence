@@ -801,14 +801,24 @@ impl ModelArtifactBuilder {
                     .ok_or_else(|| ModelArtifactError::MissingUnit {
                         substance: substance.clone(),
                     })?;
-            let total = self
+            let amounts = self
                 .initial_stocks
                 .iter()
                 .filter_map(|(_, stock)| stock.iter().find(|(id, _)| id == &substance))
-                .map(|(_, amount)| amount.value())
-                .sum::<f64>();
+                .map(|(_, amount)| amount.value());
             let countable_ceiling = declaration.quantum().countable_ceiling();
-            if !total.is_finite() || total > countable_ceiling {
+            let mut total = 0.0;
+            let mut remaining = countable_ceiling;
+            let mut exceeds_ceiling = false;
+            for amount in amounts {
+                total += amount;
+                if amount > remaining {
+                    exceeds_ceiling = true;
+                } else {
+                    remaining -= amount;
+                }
+            }
+            if !total.is_finite() || exceeds_ceiling {
                 return Err(ModelArtifactError::UncountableInitialTotal {
                     substance: substance.clone(),
                     total,
