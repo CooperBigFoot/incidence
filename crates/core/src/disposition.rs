@@ -176,7 +176,6 @@ pub fn commit_disposition(
         }
     }
 
-    let semantics = artifact.versions().numerical_semantics();
     let mut transfers = Vec::new();
     for substance in artifact.registry().iter() {
         let entry =
@@ -198,37 +197,35 @@ pub fn commit_disposition(
                 });
             }
         };
-
-        let mut partitioned = entry.retained.value();
-        let mut source_remaining = available.value();
-        for allocation in &entry.allocations {
-            partitioned = semantics
-                .add(partitioned, allocation.amount.value())
-                .map_err(|_| TransactionError::NonFinitePartition {
+        let quantum =
+            artifact
+                .quantum(substance)
+                .ok_or_else(|| TransactionError::StockUnavailable {
                     compartment: compartment.clone(),
                     substance: substance.clone(),
                     timestep,
                 })?;
-            if allocation.amount.value().to_bits() != 0 {
-                if allocation.amount.value() <= source_remaining {
-                    let debited = semantics
-                        .subtract(source_remaining, allocation.amount.value())
-                        .map_err(|_| TransactionError::NonFinitePartition {
-                            compartment: compartment.clone(),
-                            substance: substance.clone(),
-                            timestep,
-                        })?;
-                    if debited.to_bits() == source_remaining.to_bits() {
-                        return Err(TransactionError::IneffectiveDebit {
-                            compartment: compartment.clone(),
-                            substance: substance.clone(),
-                            timestep,
-                            stock_bits: source_remaining.to_bits(),
-                            amount_bits: allocation.amount.value().to_bits(),
-                        });
-                    }
-                    source_remaining = debited;
-                }
+        let (available_count, available_remainder) = before
+            .final_state()
+            .finite_quantum_parts(&compartment, substance)
+            .ok_or_else(|| TransactionError::StockUnavailable {
+                compartment: compartment.clone(),
+                substance: substance.clone(),
+                timestep,
+            })?;
+        let mut allocation_count = 0_u128;
+        for allocation in &entry.allocations {
+            let count = quantum
+                .whole_count(allocation.amount.value())
+                .ok_or_else(|| TransactionError::NonQuantumAllocation {
+                    compartment: compartment.clone(),
+                    substance: substance.clone(),
+                    timestep,
+                    amount_bits: allocation.amount.value().to_bits(),
+                    quantum_bits: quantum.value().to_bits(),
+                })?;
+            allocation_count += u128::from(count);
+            if count != 0 {
                 let amounts = SparseSubstanceVector::new(
                     artifact.registry(),
                     [(substance.clone(), allocation.amount)],
@@ -246,27 +243,33 @@ pub fn commit_disposition(
                 ));
             }
         }
-
-        if partitioned > available.value() {
+        if allocation_count > u128::from(available_count) {
             return Err(TransactionError::Overdraw {
                 compartment: compartment.clone(),
                 substance: substance.clone(),
                 timestep,
                 available_bits: available.value().to_bits(),
-                requested_bits: partitioned.to_bits(),
+                requested_bits: entry.retained.value().to_bits(),
             });
         }
-        if entry.retained.value().to_bits() != source_remaining.to_bits() {
+        let retained_count = available_count - allocation_count as u64;
+        let expected_retained = quantum
+            .join(retained_count, available_remainder)
+            .ok_or_else(|| TransactionError::NonFinitePartition {
+                compartment: compartment.clone(),
+                substance: substance.clone(),
+                timestep,
+            })?;
+        if entry.retained.value().to_bits() != expected_retained.to_bits() {
             return Err(TransactionError::IncompletePartition {
                 compartment: compartment.clone(),
                 substance: substance.clone(),
                 timestep,
                 available_bits: available.value().to_bits(),
-                partitioned_bits: partitioned.to_bits(),
+                partitioned_bits: entry.retained.value().to_bits(),
             });
         }
     }
-
     let mut staged = log.clone();
     for transfer in transfers {
         staged
@@ -452,6 +455,17 @@ pub enum TransactionError {
         timestep: TimestepIndex,
         stock_bits: u64,
         amount_bits: u64,
+    },
+    /// Fires when an authored allocation is not an exact whole multiple of the declared quantum.
+    #[error(
+        "allocation from compartment `{compartment}`, substance `{substance}` at timestep {timestep:?} has amount bits {amount_bits:#018x}, not a whole multiple of quantum bits {quantum_bits:#018x}"
+    )]
+    NonQuantumAllocation {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+        amount_bits: u64,
+        quantum_bits: u64,
     },
     /// Fires when explicit retention and allocations do not exactly cover available stock.
     #[error(

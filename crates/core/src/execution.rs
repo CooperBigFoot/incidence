@@ -18,7 +18,7 @@ use crate::ledger::{
 };
 use crate::model_artifact::{ModelArtifact, RuleDefinition};
 use crate::non_negative_amount::{NonNegativeAmount, NonNegativeAmountError};
-use crate::numerical_semantics::{NumericalSemanticsError, ScalarComparison};
+use crate::numerical_semantics::NumericalSemanticsError;
 use crate::partition_expression::PartitionExprView;
 use crate::presence::ValueState;
 use crate::projection::{
@@ -596,11 +596,21 @@ impl StepExecutor {
                         });
                     }
                 };
+                let available_parts = replay
+                    .final_state()
+                    .finite_quantum_parts(compartment, substance)
+                    .ok_or_else(|| ExecutionError::MissingValue {
+                        compartment: compartment.clone(),
+                        substance: substance.clone(),
+                        timestep,
+                        kind: "quantum stock",
+                        identity: substance.as_str().to_owned(),
+                    })?;
                 let rule = artifact.rules().find(|rule| {
                     rule.compartment() == compartment && rule.substance() == substance
                 });
                 let (retained, allocations) = if let Some(rule) = rule {
-                    evaluate_partition(artifact, log, rule, timestep, available)?
+                    evaluate_partition(artifact, log, rule, timestep, available, available_parts)?
                 } else {
                     (available, Vec::new())
                 };
@@ -626,75 +636,100 @@ fn evaluate_partition(
     rule: &RuleDefinition,
     timestep: TimestepIndex,
     available: NonNegativeAmount,
+    available_parts: (u64, f64),
 ) -> Result<(NonNegativeAmount, Vec<Allocation>), ExecutionError> {
     let interpreter = RuleInterpreter::new(artifact, log, rule, timestep);
     let s = artifact.versions().numerical_semantics();
+    let quantum =
+        artifact
+            .quantum(rule.substance())
+            .ok_or_else(|| ExecutionError::MissingValue {
+                compartment: rule.compartment().clone(),
+                substance: rule.substance().clone(),
+                timestep,
+                kind: "quantum",
+                identity: rule.substance().as_str().to_owned(),
+            })?;
+    let (available_count, available_remainder) = available_parts;
     let mut allocations = Vec::new();
-    let mut add_branch =
-        |branch: &TransferBranchId, a: NonNegativeAmount| -> Result<(), ExecutionError> {
-            let id = artifact
-                .transfer_destination(rule.compartment(), rule.substance(), branch)
-                .ok_or_else(|| ExecutionError::MissingValue {
+    let mut transfer_count = 0_u128;
+    let mut add_branch = |branch: &TransferBranchId, value: f64| -> Result<(), ExecutionError> {
+        let raw = amount(rule, timestep, value)?;
+        let (count, _) =
+            quantum
+                .split(raw.value())
+                .ok_or_else(|| ExecutionError::InvalidAmount {
                     compartment: rule.compartment().clone(),
                     substance: rule.substance().clone(),
                     timestep,
-                    kind: "branch",
-                    identity: branch.as_str().to_owned(),
+                    bits: value.to_bits(),
                 })?;
-            let target = match artifact.topology().endpoint(id) {
-                Some(TopologyEndpoint::Finite(v)) => TransferEndpoint::Finite(v.clone()),
-                Some(TopologyEndpoint::Boundary(v)) => TransferEndpoint::Boundary(v.clone()),
-                None => {
-                    return Err(ExecutionError::MissingValue {
-                        compartment: rule.compartment().clone(),
-                        substance: rule.substance().clone(),
-                        timestep,
-                        kind: "endpoint",
-                        identity: id.as_str().to_owned(),
-                    });
-                }
-            };
-            allocations.push(Allocation::new(target, a));
-            Ok(())
+        let quantized_value =
+            quantum
+                .join(count, 0.0)
+                .ok_or_else(|| ExecutionError::InvalidAmount {
+                    compartment: rule.compartment().clone(),
+                    substance: rule.substance().clone(),
+                    timestep,
+                    bits: value.to_bits(),
+                })?;
+        let quantized = amount(rule, timestep, quantized_value)?;
+        let id = artifact
+            .transfer_destination(rule.compartment(), rule.substance(), branch)
+            .ok_or_else(|| ExecutionError::MissingValue {
+                compartment: rule.compartment().clone(),
+                substance: rule.substance().clone(),
+                timestep,
+                kind: "branch",
+                identity: branch.as_str().to_owned(),
+            })?;
+        let target = match artifact.topology().endpoint(id) {
+            Some(TopologyEndpoint::Finite(v)) => TransferEndpoint::Finite(v.clone()),
+            Some(TopologyEndpoint::Boundary(v)) => TransferEndpoint::Boundary(v.clone()),
+            None => {
+                return Err(ExecutionError::MissingValue {
+                    compartment: rule.compartment().clone(),
+                    substance: rule.substance().clone(),
+                    timestep,
+                    kind: "endpoint",
+                    identity: id.as_str().to_owned(),
+                });
+            }
         };
-    let transfer_total = match rule.disposition().view() {
+        allocations.push(Allocation::new(target, quantized));
+        transfer_count += u128::from(count);
+        Ok(())
+    };
+    match rule.disposition().view() {
         PartitionExprView::RetainAll => {
             let _evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
-            0.0
         }
         PartitionExprView::ReleaseAll { branch } => {
-            let evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
+            let evaluated_amount = interpreter.evaluate()?;
             add_branch(branch, evaluated_amount)?;
-            evaluated_amount.value()
         }
         PartitionExprView::ConstantFractionTransfer { branch, fraction } => {
             let evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
-            let v = s.multiply(evaluated_amount.value(), fraction.value())?;
-            let a = amount(rule, timestep, v)?;
-            add_branch(branch, a)?;
-            v
+            let value = s.multiply(evaluated_amount.value(), fraction.value())?;
+            add_branch(branch, value)?;
         }
         PartitionExprView::FixedFractionSplit {
             retained_fraction: _,
             branches,
         } => {
             let evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
-            let mut total = 0.0;
-            for b in branches {
-                let v = s.multiply(evaluated_amount.value(), b.fraction().value())?;
-                let a = amount(rule, timestep, v)?;
-                add_branch(b.branch(), a)?;
-                total = s.add(total, v)?;
+            for branch in branches {
+                let value = s.multiply(evaluated_amount.value(), branch.fraction().value())?;
+                add_branch(branch.branch(), value)?;
             }
-            total
         }
         PartitionExprView::ExogenousSeries { branch, series } => {
             let _evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
-            let v = artifact
+            let value = artifact
                 .forcings()
-                .find(|x| x.id() == series.id())
-                .and_then(|x| match x.value_at(timestep) {
-                    ValueState::Present(v) => Some(v),
+                .find(|forcing| forcing.id() == series.id())
+                .and_then(|forcing| match forcing.value_at(timestep) {
+                    ValueState::Present(value) => Some(value),
                     _ => None,
                 })
                 .ok_or_else(|| ExecutionError::MissingValue {
@@ -704,38 +739,35 @@ fn evaluate_partition(
                     kind: "forcing",
                     identity: series.id().as_str().to_owned(),
                 })?;
-            let a = amount(rule, timestep, v)?;
-            add_branch(branch, a)?;
-            v
+            add_branch(branch, value)?;
         }
         PartitionExprView::ExpressionPartition { branches } => {
-            let mut total = 0.0;
             for branch in branches {
                 let value = interpreter.evaluate_expression(branch.expression())?;
-                let allocation = amount(rule, timestep, value)?;
-                add_branch(branch.branch(), allocation)?;
-                total = s.add(total, value)?;
+                add_branch(branch.branch(), value)?;
             }
-            total
         }
-    };
-    if s.compare(
-        ScalarComparison::GreaterThan,
-        transfer_total,
-        available.value(),
-    )? {
+    }
+    if transfer_count > u128::from(available_count) {
+        let requested = allocations.iter().try_fold(0.0, |total, allocation| {
+            s.add(total, allocation.amount().value())
+        })?;
         return Err(ExecutionError::RuleOverdraw {
             compartment: rule.compartment().clone(),
             substance: rule.substance().clone(),
             timestep,
             available_bits: available.value().to_bits(),
-            requested_bits: transfer_total.to_bits(),
+            requested_bits: requested.to_bits(),
         });
     }
-    let retained_value = allocations
-        .iter()
-        .try_fold(available.value(), |remaining, allocation| {
-            s.subtract(remaining, allocation.amount().value())
+    let retained_count = available_count - transfer_count as u64;
+    let retained_value = quantum
+        .join(retained_count, available_remainder)
+        .ok_or_else(|| ExecutionError::InvalidAmount {
+            compartment: rule.compartment().clone(),
+            substance: rule.substance().clone(),
+            timestep,
+            bits: available.value().to_bits(),
         })?;
     let retained = amount(rule, timestep, retained_value)?;
     Ok((retained, allocations))
