@@ -57,7 +57,7 @@ def test_plain_data_expression_partition_runs_each_named_branch_amount():
             },
         ],
         input_bindings=[],
-        units=[{"substance": "water", "unit": "m3"}],
+        units=[{"substance": "water", "unit": "m3", "quantum": 1.0e-6}],
     )
 
     run = incidence.compile_model(document).run(bytes([0x31]) * 16)

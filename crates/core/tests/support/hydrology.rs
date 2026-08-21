@@ -412,6 +412,7 @@ pub fn fixture() -> ModelDocument {
         units: vec![UnitDocument {
             substance: "water".to_owned(),
             unit: "m3".to_owned(),
+            quantum: 1.0e-6,
         }],
     }
 }

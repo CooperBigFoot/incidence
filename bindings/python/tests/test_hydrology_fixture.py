@@ -17,7 +17,7 @@ RULE_COMPARTMENTS = (
     "demand",
 )
 RUN_ID = bytes([0x71]) * 16
-RUST_LOG_DIGEST = "e2757681d27cde03f15ba2cfd82ccd44613160a57c9e5cc33f96d3853bfdb103"
+RUST_LOG_DIGEST = "ab7ea6531e55332f155caf6f685c6551ee86ae1a7d8d749bbe37925137fde82a"
 
 
 def _expression_node(kind: str, lhs: dict, rhs: dict) -> dict:
@@ -317,7 +317,7 @@ def hydrology_model_document() -> dict:
             }
             for owner, input_id, forcing_id in input_bindings
         ],
-        units=[{"substance": "water", "unit": "m3"}],
+        units=[{"substance": "water", "unit": "m3", "quantum": 1.0e-6}],
     )
 
 

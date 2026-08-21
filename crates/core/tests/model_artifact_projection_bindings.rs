@@ -3,7 +3,7 @@
 use incidence_core::endpoints::FiniteCompartment;
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
-use incidence_core::model_artifact::{ModelArtifact, UnitId};
+use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::numerical_semantics::NumericalSemanticsVersion;
 use incidence_core::projection::{
     AuthoritativeFactSelector, BoundedLagSpec, InitialProjectionValue, InitialProjectorState,
@@ -61,7 +61,10 @@ fn rejects_projection_fact_selectors_outside_artifact_domains() {
         .with_projections(projections)
         .with_units(vec![(
             water,
-            UnitId::parse("m3").expect("fixture unit is valid"),
+            SubstanceUnit::new(
+                UnitId::parse("m3").expect("fixture unit is valid"),
+                Quantum::try_from(1.0e-6).expect("valid quantum"),
+            ),
         )])
         .build()
         .expect_err("a projection cannot read an absent compartment");
