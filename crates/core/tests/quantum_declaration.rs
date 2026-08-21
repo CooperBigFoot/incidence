@@ -3,6 +3,7 @@
 #[path = "support/hydrology.rs"]
 mod hydrology;
 
+use incidence_core::model_artifact::MAX_EXACT_WHOLE_MULTIPLES;
 use incidence_core::model_document::ModelDocument;
 
 #[test]
@@ -47,4 +48,26 @@ fn quantum_participates_in_model_identity() {
 
     assert_ne!(coarse.canonical_bytes(), fine.canonical_bytes());
     assert_ne!(coarse.digest(), fine.digest());
+}
+
+#[test]
+fn split_initial_stocks_above_the_countable_ceiling_are_refused() {
+    let mut document = hydrology::fixture();
+    document.units[0].quantum = 1.0;
+    for stock in &mut document.initial_stocks {
+        stock.amounts[0].amount = 0.0;
+    }
+    document.initial_stocks[0].amounts[0].amount = MAX_EXACT_WHOLE_MULTIPLES;
+    document.initial_stocks[1].amounts[0].amount = 1.0;
+
+    let error = document
+        .artifact()
+        .expect_err("the extra quantum must not disappear while totaling stocks");
+    let diagnostic = error.to_string();
+
+    assert!(diagnostic.contains("water"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("exactly countable ceiling"),
+        "{diagnostic}"
+    );
 }
