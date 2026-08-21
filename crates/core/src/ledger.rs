@@ -13,7 +13,7 @@ use crate::endpoints::{BoundaryAccount, FiniteCompartment};
 use crate::identity::{CompartmentId, SubstanceId};
 use crate::initial_stocks::InitialStocks;
 use crate::model_artifact::{
-    MAX_EXACT_WHOLE_MULTIPLES, ModelArtifact, ModelArtifactArchive, ModelDigest,
+    MAX_EXACT_WHOLE_MULTIPLE_COUNT, ModelArtifact, ModelArtifactArchive, ModelDigest,
 };
 use crate::non_negative_amount::NonNegativeAmount;
 use crate::numerical_semantics::NumericalSemanticsVersion;
@@ -857,7 +857,7 @@ fn reduce_state_total(
     let count = i64::try_from(count).map_err(|_| ReplayError::ConservationReduction {
         substance: substance.clone(),
     })?;
-    if count.unsigned_abs() as f64 > MAX_EXACT_WHOLE_MULTIPLES {
+    if count.unsigned_abs() > MAX_EXACT_WHOLE_MULTIPLE_COUNT {
         return Err(ReplayError::ConservationReduction {
             substance: substance.clone(),
         });
@@ -1023,7 +1023,7 @@ fn refresh_endpoint(
             .ok_or_else(|| ReplayError::EndpointKindMismatch {
                 compartment: endpoint.id().clone(),
             })?;
-    if parts.count.unsigned_abs() as f64 > MAX_EXACT_WHOLE_MULTIPLES {
+    if parts.count.unsigned_abs() > MAX_EXACT_WHOLE_MULTIPLE_COUNT {
         return Err(ReplayError::NonFiniteFold {
             compartment: endpoint.id().clone(),
             substance: substance.clone(),
