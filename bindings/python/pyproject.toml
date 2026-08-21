@@ -15,7 +15,7 @@ dev = [
 ]
 
 [tool.uv]
-package = false
+package = true
 
 [tool.maturin]
 manifest-path = "Cargo.toml"

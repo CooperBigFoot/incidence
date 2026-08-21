@@ -16,6 +16,7 @@ projection = _incidence.projection
 add = _incidence.add
 mul = _incidence.mul
 multiply = mul
+power = _incidence.power
 min = _incidence.min
 minimum = min
 max = _incidence.max
@@ -78,7 +79,7 @@ def model_document(**components):
 
 __all__ = [
     "CompiledModel", "CompletedRun", "PresenceSeries", "compile_model", "literal", "param", "parameter", "input",
-    "forcing", "projection", "add", "mul", "multiply", "min", "minimum", "max",
+    "forcing", "projection", "add", "mul", "multiply", "power", "min", "minimum", "max",
     "maximum", "clamp", "compare", "select", "table_lookup", "interpolated_table",
     "roundtrip_expression", "retain_all", "release_all", "rule", "model_document",
 ]

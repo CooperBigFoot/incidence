@@ -21,6 +21,7 @@ pub enum ScalarOperation {
     Subtract,
     Multiply,
     Divide,
+    Power,
     Compare,
     Minimum,
     Maximum,
@@ -47,6 +48,8 @@ pub enum OperandPosition {
     Value,
     Lhs,
     Rhs,
+    Base,
+    Exponent,
     Lower,
     Upper,
     Condition,
@@ -125,6 +128,17 @@ impl NumericalSemanticsVersion {
         let lhs = self.operand(ScalarOperation::Divide, OperandPosition::Lhs, lhs)?;
         let rhs = self.operand(ScalarOperation::Divide, OperandPosition::Rhs, rhs)?;
         self.result(ScalarOperation::Divide, lhs / rhs)
+    }
+
+    /// Raises a finite base to a finite exponent in written operand order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NumericalSemanticsError`] when an operand or the computed result is non-finite.
+    pub fn power(self, base: f64, exponent: f64) -> Result<f64, NumericalSemanticsError> {
+        let base = self.operand(ScalarOperation::Power, OperandPosition::Base, base)?;
+        let exponent = self.operand(ScalarOperation::Power, OperandPosition::Exponent, exponent)?;
+        self.result(ScalarOperation::Power, base.powf(exponent))
     }
 
     /// Applies one named comparison to two finite scalars.
