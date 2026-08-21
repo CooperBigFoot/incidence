@@ -3,7 +3,7 @@
 use incidence_core::endpoints::{BoundaryAccount, FiniteCompartment};
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
-use incidence_core::model_artifact::{ModelArtifact, UnitId};
+use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::projection::ProjectionSet;
 use incidence_core::sparse_substance_vector::SparseSubstanceVector;
@@ -59,8 +59,20 @@ pub(crate) fn fixture() -> ModelArtifact {
     ModelArtifact::builder(topology, registry, stocks, calendar, horizon)
         .with_projections(ProjectionSet::new(vec![], vec![]).expect("valid projections"))
         .with_units(vec![
-            (water, UnitId::parse("kg").expect("valid unit")),
-            (salt, UnitId::parse("kg").expect("valid unit")),
+            (
+                water,
+                SubstanceUnit::new(
+                    UnitId::parse("kg").expect("valid unit"),
+                    Quantum::try_from(1.0e-6).expect("valid quantum"),
+                ),
+            ),
+            (
+                salt,
+                SubstanceUnit::new(
+                    UnitId::parse("kg").expect("valid unit"),
+                    Quantum::try_from(1.0e-6).expect("valid quantum"),
+                ),
+            ),
         ])
         .build()
         .expect("valid artifact")

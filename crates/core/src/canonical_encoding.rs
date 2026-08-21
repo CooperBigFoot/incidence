@@ -80,6 +80,7 @@ pub enum CanonicalField {
     ArtifactUnits,
     ArtifactUnitSubstance,
     ArtifactUnitIdentity,
+    ArtifactUnitQuantum,
 }
 
 /// A checked failure to produce canonical bytes.

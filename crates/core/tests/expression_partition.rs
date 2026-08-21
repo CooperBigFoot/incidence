@@ -6,7 +6,9 @@ use incidence_core::execution_bindings::{ExecutionBindings, TransferBranchBindin
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{RunId, replay_with_artifact};
-use incidence_core::model_artifact::{ModelArtifact, RuleDefinition, UnitId};
+use incidence_core::model_artifact::{
+    ModelArtifact, Quantum, RuleDefinition, SubstanceUnit, UnitId,
+};
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::numerical_semantics::NumericalSemanticsVersion;
 use incidence_core::partition_expression::{ExpressionBranch, PartitionExpr};
@@ -106,7 +108,13 @@ fn artifact(amounts: [f64; 2]) -> ModelArtifact {
         .with_projections(ProjectionSet::new(vec![], vec![]).expect("valid projections"))
         .with_rules(vec![rule])
         .with_execution_bindings(bindings)
-        .with_units(vec![(water, UnitId::parse("m3").expect("valid unit"))])
+        .with_units(vec![(
+            water,
+            SubstanceUnit::new(
+                UnitId::parse("m3").expect("valid unit"),
+                Quantum::try_from(1.0e-6).expect("valid quantum"),
+            ),
+        )])
         .build()
         .expect("valid artifact")
 }

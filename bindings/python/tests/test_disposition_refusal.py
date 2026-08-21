@@ -11,7 +11,7 @@ def test_positive_stock_for_an_omitted_substance_is_refused_at_compile_time():
     fixture = json.loads((Path(__file__).parent / "fixture.json").read_text())
     document = copy.deepcopy(fixture)
     document["substances"].append("salt")
-    document["units"].append({"substance": "salt", "unit": "mass"})
+    document["units"].append({"substance": "salt", "unit": "mass", "quantum": 1.0e-6})
     document["initial_stocks"][0]["amounts"].append(
         {"substance": "salt", "amount": 3.0}
     )

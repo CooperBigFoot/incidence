@@ -11,7 +11,9 @@ use crate::forcing::ForcingSeries;
 use crate::identity::{CompartmentId, SubstanceId};
 use crate::initial_stocks::InitialStocks;
 use crate::interpolation_table::InterpolationTable;
-use crate::model_artifact::{ModelArtifact, ModelVersions, RuleDefinition, UnitId};
+use crate::model_artifact::{
+    ModelArtifact, ModelVersions, Quantum, RuleDefinition, SubstanceUnit, UnitId,
+};
 use crate::non_negative_amount::NonNegativeAmount;
 use crate::numerical_semantics::NumericalSemanticsVersion;
 use crate::partition_expression::PartitionExpr;
@@ -177,12 +179,38 @@ pub struct InputBindingDocument {
     pub source: InputSourceDocument,
 }
 
-/// The opaque unit assigned to one registered substance.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// The display unit and arithmetic quantum assigned to one registered substance.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnitDocument {
     pub substance: String,
     pub unit: String,
+    pub quantum: f64,
+}
+
+impl<'de> Deserialize<'de> for UnitDocument {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireUnitDocument {
+            substance: String,
+            unit: String,
+            quantum: Option<f64>,
+        }
+
+        let wire = WireUnitDocument::deserialize(deserializer)?;
+        let quantum = wire.quantum.ok_or_else(|| {
+            serde::de::Error::custom("units component requires a `quantum` declaration")
+        })?;
+        Ok(Self {
+            substance: wire.substance,
+            unit: wire.unit,
+            quantum,
+        })
+    }
 }
 
 /// Reports which document component failed domain parsing or validation.
@@ -385,7 +413,10 @@ impl ModelDocument {
             .map(|unit| {
                 Ok((
                     substance(&unit.substance)?,
-                    UnitId::parse(&unit.unit).map_err(|e| invalid("unit", e))?,
+                    SubstanceUnit::new(
+                        UnitId::parse(&unit.unit).map_err(|e| invalid("units", e))?,
+                        Quantum::try_from(unit.quantum).map_err(|e| invalid("units", e))?,
+                    ),
                 ))
             })
             .collect::<Result<Vec<_>, ModelDocumentError>>()?;
