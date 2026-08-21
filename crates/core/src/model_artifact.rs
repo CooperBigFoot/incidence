@@ -126,6 +126,7 @@ impl Display for UnitId {
 
 /// Largest consecutive whole-number count exactly representable by binary64.
 pub const MAX_EXACT_WHOLE_MULTIPLES: f64 = 9_007_199_254_740_992.0;
+pub(crate) const MAX_EXACT_WHOLE_MULTIPLE_COUNT: u64 = 1_u64 << 53;
 
 /// The smallest representable amount for one substance.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -185,7 +186,7 @@ impl Quantum {
 
     /// Reconstructs an amount from an exactly represented whole-quantum count and remainder.
     pub(crate) fn join(self, count: u64, remainder: f64) -> Option<f64> {
-        if count as f64 > MAX_EXACT_WHOLE_MULTIPLES || !remainder.is_finite() || remainder < 0.0 {
+        if count > MAX_EXACT_WHOLE_MULTIPLE_COUNT || !remainder.is_finite() || remainder < 0.0 {
             return None;
         }
         let value = (count as f64) * self.0 + remainder;
