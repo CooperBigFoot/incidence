@@ -1376,17 +1376,12 @@ fn selector_direction_tags_discriminate_incoming_from_outgoing() {
     );
 
     let advisory = INCOMING_JSON.replace(r#""value_kind":"extensive""#, r#""value_kind":"truth""#);
-    let reconstructed: ProjectionSpec = match serde_json::from_str(&advisory) {
-        Ok(value) => value,
-        Err(error) => panic!("advisory value kind must decode: {error}"),
-    };
-    assert_eq!(reconstructed.value_kind(), ProjectionValueKind::Extensive);
-    assert_eq!(
-        match serde_json::to_string(&reconstructed) {
-            Ok(value) => value,
-            Err(error) => panic!("reconstructed lag must serialize: {error}"),
-        },
-        INCOMING_JSON
+    let error = serde_json::from_str::<ProjectionSpec>(&advisory)
+        .expect_err("a declared projection value kind must match the derived kind");
+    assert!(
+        error
+            .to_string()
+            .contains("does not match derived Extensive")
     );
 }
 
