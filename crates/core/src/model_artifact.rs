@@ -143,6 +143,54 @@ impl Quantum {
     pub fn countable_ceiling(self) -> f64 {
         self.0 * MAX_EXACT_WHOLE_MULTIPLES
     }
+
+    /// Splits a non-negative amount into a whole-quantum count and the retained remainder.
+    pub(crate) fn split(self, value: f64) -> Option<(u64, f64)> {
+        if !value.is_finite() || value < 0.0 || value > self.countable_ceiling() {
+            return None;
+        }
+        if let Some(count) = self.whole_count(value) {
+            return Some((count, 0.0));
+        }
+        let quotient = (value / self.0).floor();
+        if !quotient.is_finite() || !(0.0..=MAX_EXACT_WHOLE_MULTIPLES).contains(&quotient) {
+            return None;
+        }
+        let mut count = quotient as u64;
+        let mut represented = (count as f64) * self.0;
+        if represented > value {
+            count = count.checked_sub(1)?;
+            represented = (count as f64) * self.0;
+        }
+        let remainder = value - represented;
+        if remainder.is_finite() && remainder >= 0.0 {
+            Some((count, remainder))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the count when an amount is exactly the binary64 image of whole quanta.
+    pub(crate) fn whole_count(self, value: f64) -> Option<u64> {
+        if !value.is_finite() || value < 0.0 {
+            return None;
+        }
+        let quotient = (value / self.0).round();
+        if !quotient.is_finite() || !(0.0..=MAX_EXACT_WHOLE_MULTIPLES).contains(&quotient) {
+            return None;
+        }
+        let count = quotient as u64;
+        (((count as f64) * self.0).to_bits() == value.to_bits()).then_some(count)
+    }
+
+    /// Reconstructs an amount from an exactly represented whole-quantum count and remainder.
+    pub(crate) fn join(self, count: u64, remainder: f64) -> Option<f64> {
+        if count as f64 > MAX_EXACT_WHOLE_MULTIPLES || !remainder.is_finite() || remainder < 0.0 {
+            return None;
+        }
+        let value = (count as f64) * self.0 + remainder;
+        value.is_finite().then_some(value)
+    }
 }
 
 impl TryFrom<f64> for Quantum {
