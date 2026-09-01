@@ -13,10 +13,15 @@ use incidence_core::model_artifact::{
 };
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::numerical_semantics::NumericalSemanticsVersion;
-use incidence_core::partition_expression::PartitionExpr;
-use incidence_core::projection::ProjectionSet;
+use incidence_core::partition_expression::{ExpressionBranch, PartitionExpr};
+use incidence_core::projection::{
+    AuthoritativeFactSelector, InitialProjectorState, OrderedRollingAggregateSpec, ProjectionSet,
+    ProjectionSource, RollingAggregate,
+};
 use incidence_core::rule_expression::RuleExpr;
-use incidence_core::rule_reference::TransferBranchId;
+use incidence_core::rule_reference::{
+    ProjectionId, ProjectionRef, ProjectionValueKind, TransferBranchId,
+};
 use incidence_core::sparse_substance_vector::SparseSubstanceVector;
 use incidence_core::substance_registry::SubstanceRegistry;
 use incidence_core::temporal::{
@@ -117,7 +122,7 @@ fn colliding_public_values_keep_distinct_authoritative_transfer_counts() {
 }
 
 #[test]
-fn release_all_carries_a_colliding_count_through_execution_log_and_replay() {
+fn authoritative_projection_preserves_a_colliding_count_through_execution() {
     let source_a = CompartmentId::parse("source-a").expect("source a");
     let source_b = CompartmentId::parse("source-b").expect("source b");
     let aggregator = CompartmentId::parse("aggregator").expect("aggregator");
@@ -164,25 +169,57 @@ fn release_all_carries_a_colliding_count_through_execution_log_and_replay() {
     let branch_a = TransferBranchId::parse("from-a").expect("branch a");
     let branch_b = TransferBranchId::parse("from-b").expect("branch b");
     let branch_out = TransferBranchId::parse("to-outside").expect("branch outside");
-    let release = |source: CompartmentId, branch: TransferBranchId, expression| {
+    let projection_id = ProjectionId::parse("incoming-total").expect("projection id");
+    let projected_incoming = RuleExpr::projection(
+        RuleIrVersion::V1,
+        NumericalSemanticsVersion::V1,
+        ProjectionRef::new(projection_id.clone(), ProjectionValueKind::Extensive),
+    );
+    let release = |source: CompartmentId, branch: TransferBranchId, expression: RuleExpr| {
         RuleDefinition::new(
             source,
             water.clone(),
-            literal(expression),
+            expression,
             PartitionExpr::release_all(RuleIrVersion::V1, NumericalSemanticsVersion::V1, branch),
             [],
         )
         .expect("release-all rule")
     };
+    let aggregator_rule = RuleDefinition::new(
+        aggregator.clone(),
+        water.clone(),
+        projected_incoming.clone(),
+        PartitionExpr::expression_partition(
+            RuleIrVersion::V1,
+            NumericalSemanticsVersion::V1,
+            vec![ExpressionBranch::new(
+                branch_out.clone(),
+                projected_incoming,
+            )],
+        )
+        .expect("expression partition"),
+        [],
+    )
+    .expect("aggregator rule");
     let rules = vec![
-        release(source_a.clone(), branch_a.clone(), half_value),
-        release(source_b.clone(), branch_b.clone(), half_value),
-        release(
-            aggregator.clone(),
-            branch_out.clone(),
-            (COLLIDING_COUNT as f64) * 0.001,
-        ),
+        release(source_a.clone(), branch_a.clone(), literal(half_value)),
+        release(source_b.clone(), branch_b.clone(), literal(half_value)),
+        aggregator_rule,
     ];
+    let rolling = OrderedRollingAggregateSpec::new(
+        RuleIrVersion::V1,
+        NumericalSemanticsVersion::V1,
+        projection_id.clone(),
+        ProjectionSource::AuthoritativeFact(AuthoritativeFactSelector::IncomingTransferAmount {
+            compartment: aggregator.clone(),
+            substance: water.clone(),
+        }),
+        1,
+        RollingAggregate::SumOldestToNewest,
+    )
+    .expect("rolling identity projection");
+    let initial = InitialProjectorState::new(projection_id, NumericalSemanticsVersion::V1, vec![])
+        .expect("empty window-one initial state");
     let bindings = ExecutionBindings::new(
         [
             TransferBranchBinding::new(
@@ -208,7 +245,9 @@ fn release_all_carries_a_colliding_count_through_execution_log_and_replay() {
     );
     let horizon = RunHorizon::new(TimestepIndex::new(0), TimestepIndex::new(0)).expect("horizon");
     let artifact = ModelArtifact::builder(topology, registry, stocks, calendar, horizon)
-        .with_projections(ProjectionSet::new(vec![], vec![]).expect("projections"))
+        .with_projections(
+            ProjectionSet::new(vec![rolling.into()], vec![initial]).expect("projections"),
+        )
         .with_rules(rules)
         .with_execution_bindings(bindings)
         .with_units(vec![(
@@ -237,5 +276,142 @@ fn release_all_carries_a_colliding_count_through_execution_log_and_replay() {
             .final_state()
             .finite_quantum_count(&aggregator, &water),
         Some(0)
+    );
+}
+
+#[test]
+fn projection_count_provenance_does_not_cross_substance_quantums() {
+    let source = CompartmentId::parse("source").expect("source");
+    let aggregator = CompartmentId::parse("aggregator").expect("aggregator");
+    let outside = CompartmentId::parse("outside").expect("outside");
+    let topology = Topology::new(
+        [
+            TopologyEndpoint::Finite(FiniteCompartment::new(source.clone())),
+            TopologyEndpoint::Finite(FiniteCompartment::new(aggregator.clone())),
+            TopologyEndpoint::Boundary(BoundaryAccount::new(outside.clone())),
+        ],
+        [
+            DirectedConnection::new(source.clone(), aggregator.clone()),
+            DirectedConnection::new(aggregator.clone(), outside.clone()),
+        ],
+    )
+    .expect("topology");
+    let water = SubstanceId::parse("water").expect("water");
+    let tracer = SubstanceId::parse("tracer").expect("tracer");
+    let registry = SubstanceRegistry::new([water.clone(), tracer.clone()]).expect("registry");
+    let stock = |substance: SubstanceId| {
+        SparseSubstanceVector::new(
+            &registry,
+            [(
+                substance,
+                NonNegativeAmount::try_from(10.0).expect("stock amount"),
+            )],
+        )
+        .expect("stock vector")
+    };
+    let stocks = InitialStocks::new(
+        &topology,
+        &registry,
+        [
+            (source.clone(), stock(water.clone())),
+            (aggregator.clone(), stock(tracer.clone())),
+        ],
+    )
+    .expect("stocks");
+    let projection_id = ProjectionId::parse("incoming-water").expect("projection id");
+    let rolling = OrderedRollingAggregateSpec::new(
+        RuleIrVersion::V1,
+        NumericalSemanticsVersion::V1,
+        projection_id.clone(),
+        ProjectionSource::AuthoritativeFact(AuthoritativeFactSelector::IncomingTransferAmount {
+            compartment: aggregator.clone(),
+            substance: water.clone(),
+        }),
+        1,
+        RollingAggregate::SumOldestToNewest,
+    )
+    .expect("rolling projection");
+    let initial =
+        InitialProjectorState::new(projection_id.clone(), NumericalSemanticsVersion::V1, vec![])
+            .expect("initial projection");
+    let water_branch = TransferBranchId::parse("water-in").expect("water branch");
+    let tracer_branch = TransferBranchId::parse("tracer-out").expect("tracer branch");
+    let water_rule = RuleDefinition::new(
+        source.clone(),
+        water.clone(),
+        RuleExpr::literal(RuleIrVersion::V1, NumericalSemanticsVersion::V1, 10.0).expect("literal"),
+        PartitionExpr::release_all(
+            RuleIrVersion::V1,
+            NumericalSemanticsVersion::V1,
+            water_branch.clone(),
+        ),
+        [],
+    )
+    .expect("water rule");
+    let tracer_rule = RuleDefinition::new(
+        aggregator.clone(),
+        tracer.clone(),
+        RuleExpr::projection(
+            RuleIrVersion::V1,
+            NumericalSemanticsVersion::V1,
+            ProjectionRef::new(projection_id, ProjectionValueKind::Extensive),
+        ),
+        PartitionExpr::release_all(
+            RuleIrVersion::V1,
+            NumericalSemanticsVersion::V1,
+            tracer_branch.clone(),
+        ),
+        [],
+    )
+    .expect("tracer rule");
+    let bindings = ExecutionBindings::new(
+        [
+            TransferBranchBinding::new(source, water.clone(), water_branch, aggregator.clone()),
+            TransferBranchBinding::new(aggregator.clone(), tracer.clone(), tracer_branch, outside),
+        ],
+        [],
+    )
+    .expect("bindings");
+    let calendar = FixedStepCalendar::new(
+        CalendarOrigin::new(CalendarInstant::from_unix_seconds(0)),
+        TimestepDuration::from_seconds(1).expect("duration"),
+    );
+    let horizon = RunHorizon::new(TimestepIndex::new(0), TimestepIndex::new(0)).expect("horizon");
+    let artifact = ModelArtifact::builder(topology, registry, stocks, calendar, horizon)
+        .with_projections(
+            ProjectionSet::new(vec![rolling.into()], vec![initial]).expect("projections"),
+        )
+        .with_rules(vec![water_rule, tracer_rule])
+        .with_execution_bindings(bindings)
+        .with_units(vec![
+            (
+                water.clone(),
+                SubstanceUnit::new(
+                    UnitId::parse("m3").expect("unit"),
+                    Quantum::try_from(1.0).expect("water quantum"),
+                ),
+            ),
+            (
+                tracer.clone(),
+                SubstanceUnit::new(
+                    UnitId::parse("kg").expect("unit"),
+                    Quantum::try_from(0.001).expect("tracer quantum"),
+                ),
+            ),
+        ])
+        .build()
+        .expect("artifact");
+
+    let log = execute_model(&artifact, RunId::from_bytes([0x54; 16])).expect("execution");
+    let tracer_transfer = log
+        .transfers()
+        .iter()
+        .find(|transfer| transfer.source().id() == &aggregator)
+        .expect("tracer transfer");
+    assert_eq!(
+        tracer_transfer
+            .quantum_count(&tracer)
+            .map(QuantumCount::value),
+        Some(10_000)
     );
 }
