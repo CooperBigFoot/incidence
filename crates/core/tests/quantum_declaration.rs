@@ -71,3 +71,20 @@ fn split_initial_stocks_above_the_countable_ceiling_are_refused() {
         "{diagnostic}"
     );
 }
+
+#[test]
+fn misaligned_initial_stock_identifies_full_boundary_context() {
+    let mut document = hydrology::fixture();
+    document.units[0].quantum = 0.25;
+    document.initial_stocks[0].amounts[0].amount = 1.1;
+
+    let error = document
+        .artifact()
+        .expect_err("a fractional quantum must not enter conserved state");
+    let diagnostic = error.to_string();
+
+    assert!(diagnostic.contains("muskingum"), "{diagnostic}");
+    assert!(diagnostic.contains("water"), "{diagnostic}");
+    assert!(diagnostic.contains("1.1"), "{diagnostic}");
+    assert!(diagnostic.contains("0.25"), "{diagnostic}");
+}
