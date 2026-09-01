@@ -134,7 +134,7 @@ fn artifact(
 
 #[test]
 fn branch_amount_is_floored_to_a_whole_multiple() {
-    let artifact = artifact(1.0, 10.75, 0.0, 0.0, [2.9, 3.1]);
+    let artifact = artifact(1.0, 10.0, 0.0, 0.0, [2.9, 3.1]);
     let log = execute_model(&artifact, RunId::from_bytes([0x41; 16])).expect("valid run");
     let water = SubstanceId::parse("water").expect("valid substance");
 
@@ -151,7 +151,7 @@ fn branch_amount_is_floored_to_a_whole_multiple() {
         replay
             .final_state()
             .finite_stock(&compartment("source"), &water),
-        ValueState::Present(5.75.try_into().expect("amount"))
+        ValueState::Present(5.0.try_into().expect("amount"))
     );
 }
 
@@ -178,8 +178,8 @@ fn conserved_total_is_bit_stable_across_credits() {
     let artifact = artifact(
         quantum,
         2.139_938_136_353_314e16,
-        1_015.326_585_468_989_3,
-        6_961_448.052_063_569,
+        29.0 * quantum,
+        202_059.0 * quantum,
         [first, second],
     );
     let water = SubstanceId::parse("water").expect("valid substance");

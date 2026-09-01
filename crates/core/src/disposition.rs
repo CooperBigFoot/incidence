@@ -205,9 +205,9 @@ pub fn commit_disposition(
                     substance: substance.clone(),
                     timestep,
                 })?;
-        let (available_count, available_remainder) = before
+        let available_count = before
             .final_state()
-            .finite_quantum_parts(&compartment, substance)
+            .finite_quantum_count(&compartment, substance)
             .ok_or_else(|| TransactionError::StockUnavailable {
                 compartment: compartment.clone(),
                 substance: substance.clone(),
@@ -253,13 +253,13 @@ pub fn commit_disposition(
             });
         }
         let retained_count = available_count - allocation_count as u64;
-        let expected_retained = quantum
-            .join(retained_count, available_remainder)
-            .ok_or_else(|| TransactionError::NonFinitePartition {
+        let expected_retained = quantum.to_value(retained_count).ok_or_else(|| {
+            TransactionError::NonFinitePartition {
                 compartment: compartment.clone(),
                 substance: substance.clone(),
                 timestep,
-            })?;
+            }
+        })?;
         if entry.retained.value().to_bits() != expected_retained.to_bits() {
             return Err(TransactionError::IncompletePartition {
                 compartment: compartment.clone(),

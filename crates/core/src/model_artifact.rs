@@ -145,33 +145,23 @@ impl Quantum {
         self.0 * MAX_EXACT_WHOLE_MULTIPLES
     }
 
-    /// Splits a non-negative amount into a whole-quantum count and the retained remainder.
-    pub(crate) fn split(self, value: f64) -> Option<(u64, f64)> {
+    /// Floors a computed extensive value to an independently represented whole-quantum count.
+    pub(crate) fn floor_count(self, value: f64) -> Option<u64> {
         if !value.is_finite() || value < 0.0 || value > self.countable_ceiling() {
             return None;
-        }
-        if let Some(count) = self.whole_count(value) {
-            return Some((count, 0.0));
         }
         let quotient = (value / self.0).floor();
         if !quotient.is_finite() || !(0.0..=MAX_EXACT_WHOLE_MULTIPLES).contains(&quotient) {
             return None;
         }
         let mut count = quotient as u64;
-        let mut represented = (count as f64) * self.0;
-        if represented > value {
+        if self.to_value(count)? > value {
             count = count.checked_sub(1)?;
-            represented = (count as f64) * self.0;
         }
-        let remainder = value - represented;
-        if remainder.is_finite() && remainder >= 0.0 {
-            Some((count, remainder))
-        } else {
-            None
-        }
+        Some(count)
     }
 
-    /// Returns the count when an amount is exactly the binary64 image of whole quanta.
+    /// Returns the count when an external amount is exactly the binary64 image of whole quanta.
     pub(crate) fn whole_count(self, value: f64) -> Option<u64> {
         if !value.is_finite() || value < 0.0 {
             return None;
@@ -181,15 +171,24 @@ impl Quantum {
             return None;
         }
         let count = quotient as u64;
-        (((count as f64) * self.0).to_bits() == value.to_bits()).then_some(count)
+        (self.to_value(count)?.to_bits() == value.to_bits()).then_some(count)
     }
 
-    /// Reconstructs an amount from an exactly represented whole-quantum count and remainder.
-    pub(crate) fn join(self, count: u64, remainder: f64) -> Option<f64> {
-        if count > MAX_EXACT_WHOLE_MULTIPLE_COUNT || !remainder.is_finite() || remainder < 0.0 {
+    /// Converts an authoritative count to its deterministic public binary64 value.
+    pub(crate) fn to_value(self, count: u64) -> Option<f64> {
+        if count > MAX_EXACT_WHOLE_MULTIPLE_COUNT {
             return None;
         }
-        let value = (count as f64) * self.0 + remainder;
+        let value = (count as f64) * self.0;
+        value.is_finite().then_some(value)
+    }
+
+    /// Converts a signed boundary count to its deterministic public binary64 value.
+    pub(crate) fn to_signed_value(self, count: i64) -> Option<f64> {
+        if count.unsigned_abs() > MAX_EXACT_WHOLE_MULTIPLE_COUNT {
+            return None;
+        }
+        let value = (count as f64) * self.0;
         value.is_finite().then_some(value)
     }
 }
@@ -850,28 +849,30 @@ impl ModelArtifactBuilder {
                     .ok_or_else(|| ModelArtifactError::MissingUnit {
                         substance: substance.clone(),
                     })?;
-            let amounts = self
-                .initial_stocks
-                .iter()
-                .filter_map(|(_, stock)| stock.iter().find(|(id, _)| id == &substance))
-                .map(|(_, amount)| amount.value());
-            let countable_ceiling = declaration.quantum().countable_ceiling();
-            let mut total = 0.0;
-            let mut remaining = countable_ceiling;
-            let mut exceeds_ceiling = false;
-            for amount in amounts {
-                total += amount;
-                if amount > remaining {
-                    exceeds_ceiling = true;
-                } else {
-                    remaining -= amount;
-                }
+            let quantum = declaration.quantum();
+            let mut total_count = 0_u128;
+            let mut diagnostic_total = 0.0;
+            for (compartment, stock) in self.initial_stocks.iter() {
+                let Some((_, amount)) = stock.iter().find(|(id, _)| id == &substance) else {
+                    continue;
+                };
+                let value = amount.value();
+                let count = quantum.whole_count(value).ok_or_else(|| {
+                    ModelArtifactError::MisalignedInitialStock {
+                        compartment: compartment.clone(),
+                        substance: substance.clone(),
+                        value,
+                        quantum: quantum.value(),
+                    }
+                })?;
+                total_count += u128::from(count);
+                diagnostic_total += value;
             }
-            if !total.is_finite() || exceeds_ceiling {
+            if total_count > u128::from(MAX_EXACT_WHOLE_MULTIPLE_COUNT) {
                 return Err(ModelArtifactError::UncountableInitialTotal {
                     substance: substance.clone(),
-                    total,
-                    countable_ceiling,
+                    total: diagnostic_total,
+                    countable_ceiling: quantum.countable_ceiling(),
                 });
             }
         }
@@ -1143,6 +1144,16 @@ pub enum ModelArtifactError {
     /// Fires when a quantum is not strictly positive and finite.
     #[error("unit quantum must be positive and finite, got {value}")]
     InvalidQuantum { value: f64 },
+    /// Fires when an initial stock is not an exact whole multiple of its substance quantum.
+    #[error(
+        "initial stock in compartment `{compartment}` for substance `{substance}` has value {value}, not an exact multiple of quantum {quantum}"
+    )]
+    MisalignedInitialStock {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        value: f64,
+        quantum: f64,
+    },
     /// Fires when a substance total has more whole quanta than binary64 can count exactly.
     #[error(
         "substance `{substance}` declared total {total} exceeds the exactly countable ceiling {countable_ceiling}"

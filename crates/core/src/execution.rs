@@ -598,7 +598,7 @@ impl StepExecutor {
                 };
                 let available_parts = replay
                     .final_state()
-                    .finite_quantum_parts(compartment, substance)
+                    .finite_quantum_count(compartment, substance)
                     .ok_or_else(|| ExecutionError::MissingValue {
                         compartment: compartment.clone(),
                         substance: substance.clone(),
@@ -636,7 +636,7 @@ fn evaluate_partition(
     rule: &RuleDefinition,
     timestep: TimestepIndex,
     available: NonNegativeAmount,
-    available_parts: (u64, f64),
+    available_count: u64,
 ) -> Result<(NonNegativeAmount, Vec<Allocation>), ExecutionError> {
     let interpreter = RuleInterpreter::new(artifact, log, rule, timestep);
     let s = artifact.versions().numerical_semantics();
@@ -650,14 +650,13 @@ fn evaluate_partition(
                 kind: "quantum",
                 identity: rule.substance().as_str().to_owned(),
             })?;
-    let (available_count, available_remainder) = available_parts;
     let mut allocations = Vec::new();
     let mut transfer_count = 0_u128;
     let mut add_branch = |branch: &TransferBranchId, value: f64| -> Result<(), ExecutionError> {
         let raw = amount(rule, timestep, value)?;
-        let (count, _) =
+        let count =
             quantum
-                .split(raw.value())
+                .floor_count(raw.value())
                 .ok_or_else(|| ExecutionError::InvalidAmount {
                     compartment: rule.compartment().clone(),
                     substance: rule.substance().clone(),
@@ -666,7 +665,7 @@ fn evaluate_partition(
                 })?;
         let quantized_value =
             quantum
-                .join(count, 0.0)
+                .to_value(count)
                 .ok_or_else(|| ExecutionError::InvalidAmount {
                     compartment: rule.compartment().clone(),
                     substance: rule.substance().clone(),
@@ -761,14 +760,15 @@ fn evaluate_partition(
         });
     }
     let retained_count = available_count - transfer_count as u64;
-    let retained_value = quantum
-        .join(retained_count, available_remainder)
-        .ok_or_else(|| ExecutionError::InvalidAmount {
-            compartment: rule.compartment().clone(),
-            substance: rule.substance().clone(),
-            timestep,
-            bits: available.value().to_bits(),
-        })?;
+    let retained_value =
+        quantum
+            .to_value(retained_count)
+            .ok_or_else(|| ExecutionError::InvalidAmount {
+                compartment: rule.compartment().clone(),
+                substance: rule.substance().clone(),
+                timestep,
+                bits: available.value().to_bits(),
+            })?;
     let retained = amount(rule, timestep, retained_value)?;
     Ok((retained, allocations))
 }
