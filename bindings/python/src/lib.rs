@@ -278,12 +278,26 @@ fn parse_substitutions(
     Ok(parsed)
 }
 
+fn quantum_value(artifact: &ModelArtifact, substance: &str) -> PyResult<f64> {
+    let substance =
+        SubstanceId::parse(substance).map_err(|error| PyValueError::new_err(error.to_string()))?;
+    artifact
+        .quantum(&substance)
+        .map(|quantum| quantum.value())
+        .ok_or_else(|| PyValueError::new_err(format!("substance `{substance}` is not modelled")))
+}
+
 #[pymethods]
 impl CompiledModel {
     /// The content digest of the unchanged held artifact.
     #[getter]
     fn model_digest(&self) -> String {
         self.artifact.digest().to_hex()
+    }
+
+    /// The declared arithmetic quantum for one modelled substance.
+    fn quantum(&self, substance: &str) -> PyResult<f64> {
+        quantum_value(&self.artifact, substance)
     }
 
     /// Execute the held model with optional declared-rule-parameter replacements.
@@ -333,6 +347,11 @@ impl CompletedRun {
     #[getter]
     fn model_digest(&self) -> String {
         self.artifact.digest().to_hex()
+    }
+
+    /// The declared arithmetic quantum of the exact artifact used by this run.
+    fn quantum(&self, substance: &str) -> PyResult<f64> {
+        quantum_value(&self.artifact, substance)
     }
 
     /// Replay this run against another run's artifact, rejecting any digest mismatch.

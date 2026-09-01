@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used)]
 
-use incidence_core::endpoints::FiniteCompartment;
+use incidence_core::endpoints::{BoundaryAccount, FiniteCompartment};
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{
@@ -17,47 +17,35 @@ use incidence_core::temporal::{
 };
 use incidence_core::topology::{DirectedConnection, Topology, TopologyEndpoint};
 
-fn id(value: &str) -> CompartmentId {
-    CompartmentId::parse(value).expect("valid compartment id")
-}
-
 #[test]
-fn replay_rejects_a_transfer_smaller_than_one_quantum() {
-    let source = id("a_source");
-    let target = id("b_target");
+fn replay_refuses_an_endpoint_count_above_the_exact_ceiling() {
+    let outside = CompartmentId::parse("outside").expect("valid boundary id");
+    let store = CompartmentId::parse("store").expect("valid finite id");
     let topology = Topology::new(
         [
-            TopologyEndpoint::Finite(FiniteCompartment::new(source.clone())),
-            TopologyEndpoint::Finite(FiniteCompartment::new(target.clone())),
+            TopologyEndpoint::Boundary(BoundaryAccount::new(outside.clone())),
+            TopologyEndpoint::Finite(FiniteCompartment::new(store.clone())),
         ],
-        [DirectedConnection::new(source.clone(), target.clone())],
+        [DirectedConnection::new(outside.clone(), store.clone())],
     )
     .expect("valid topology");
-    let water = SubstanceId::parse("water").expect("valid substance id");
+    let water = SubstanceId::parse("water").expect("valid substance");
     let registry = SubstanceRegistry::new([water.clone()]).expect("valid registry");
-    let source_stock = SparseSubstanceVector::new(
-        &registry,
-        [(
-            water.clone(),
-            NonNegativeAmount::try_from(1.0e16).expect("valid amount"),
-        )],
-    )
-    .expect("valid source stock");
-    let target_stock = SparseSubstanceVector::new(
-        &registry,
-        [(
-            water.clone(),
-            NonNegativeAmount::try_from(10.0).expect("valid amount"),
-        )],
-    )
-    .expect("valid target stock");
+    let ceiling = 9_007_199_254_740_992.0;
     let stocks = InitialStocks::new(
         &topology,
         &registry,
-        [
-            (source.clone(), source_stock),
-            (target.clone(), target_stock),
-        ],
+        [(
+            store.clone(),
+            SparseSubstanceVector::new(
+                &registry,
+                [(
+                    water.clone(),
+                    NonNegativeAmount::try_from(ceiling).expect("valid ceiling stock"),
+                )],
+            )
+            .expect("valid stock vector"),
+        )],
     )
     .expect("valid stocks");
     let calendar = FixedStepCalendar::new(
@@ -71,39 +59,39 @@ fn replay_rejects_a_transfer_smaller_than_one_quantum() {
         .with_units(vec![(
             water.clone(),
             SubstanceUnit::new(
-                UnitId::parse("kg").expect("valid unit"),
-                Quantum::try_from(10.0).expect("valid quantum"),
+                UnitId::parse("m3").expect("valid unit"),
+                Quantum::try_from(1.0).expect("valid quantum"),
             ),
         )])
         .build()
-        .expect("valid artifact");
-    let _amount = SparseSubstanceVector::new(
+        .expect("valid artifact at the exact ceiling");
+    let _amounts = SparseSubstanceVector::new(
         artifact.registry(),
         [(
-            water,
+            water.clone(),
             NonNegativeAmount::try_from(1.0).expect("valid amount"),
         )],
     )
-    .expect("valid transfer amount");
-    let mut log = AuthoritativeLog::for_run(RunId::from_bytes([31; 16]), &artifact);
+    .expect("valid transfer amounts");
+    let mut log = AuthoritativeLog::for_run(RunId::from_bytes([0x51; 16]), &artifact);
     log.append(
         Transfer::new(
             TimestepIndex::new(0),
             artifact
                 .topology()
-                .endpoint(&source)
-                .expect("source endpoint")
+                .endpoint(&outside)
+                .expect("boundary endpoint")
                 .clone(),
             artifact
                 .topology()
-                .endpoint(&target)
-                .expect("target endpoint")
+                .endpoint(&store)
+                .expect("finite endpoint")
                 .clone(),
             artifact.registry(),
             [(
                 SubstanceId::parse("water").expect("water"),
                 QuantumAmount::new(
-                    Quantum::try_from(1.0).expect("alternate quantum"),
+                    artifact.quantum(&water).expect("quantum"),
                     QuantumCount::try_from(1).expect("count"),
                 )
                 .expect("projection"),
@@ -111,10 +99,10 @@ fn replay_rejects_a_transfer_smaller_than_one_quantum() {
         )
         .expect("count-bound transfer"),
     )
-    .expect("structurally valid transfer");
+    .expect("valid authoritative transfer");
 
     assert!(matches!(
         replay_with_artifact(&log, &artifact),
-        Err(ReplayError::NonQuantumTransfer { .. })
+        Err(ReplayError::NonFiniteFold { compartment, .. }) if compartment == store
     ));
 }

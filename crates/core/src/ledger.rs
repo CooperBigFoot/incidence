@@ -3,7 +3,7 @@
 //! Genesis supplies the fold seed, each Transfer contributes one incidence column per
 //! substance, and an optional RunCompleted record proves that the declared horizon was reached.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
@@ -12,7 +12,9 @@ use sha2::{Digest, Sha256};
 use crate::endpoints::{BoundaryAccount, FiniteCompartment};
 use crate::identity::{CompartmentId, SubstanceId};
 use crate::initial_stocks::InitialStocks;
-use crate::model_artifact::{ModelArtifact, ModelArtifactArchive, ModelDigest};
+use crate::model_artifact::{
+    MAX_EXACT_WHOLE_MULTIPLE_COUNT, ModelArtifact, ModelArtifactArchive, ModelDigest, Quantum,
+};
 use crate::non_negative_amount::NonNegativeAmount;
 use crate::numerical_semantics::NumericalSemanticsVersion;
 use crate::presence::ValueState;
@@ -88,31 +90,34 @@ pub struct Genesis {
     model_digest: ModelDigest,
     numerical_semantics: NumericalSemanticsVersion,
     initial_stocks: InitialStocks,
+    initial_quantum_counts: BTreeMap<(CompartmentId, SubstanceId), QuantumCount>,
 }
 impl Genesis {
     /// Creates Genesis from the exact immutable artifact that starts a run.
     #[must_use]
     pub fn for_run(run_id: RunId, artifact: &ModelArtifact) -> Self {
+        let mut initial_quantum_counts = BTreeMap::new();
+        for endpoint in artifact.topology().endpoints() {
+            if !matches!(endpoint, TopologyEndpoint::Finite(_)) {
+                continue;
+            }
+            for substance in artifact.registry().iter() {
+                if let Some(count) = artifact.initial_quantum_count(endpoint.id(), substance)
+                    && count != 0
+                {
+                    initial_quantum_counts.insert(
+                        (endpoint.id().clone(), substance.clone()),
+                        QuantumCount(count),
+                    );
+                }
+            }
+        }
         Self {
             run_id,
             model_digest: artifact.digest(),
             numerical_semantics: artifact.versions().numerical_semantics(),
             initial_stocks: artifact.initial_stocks().clone(),
-        }
-    }
-    /// Constructs a decoded Genesis record. Compatibility is checked during replay.
-    #[must_use]
-    pub fn new(
-        run_id: RunId,
-        model_digest: ModelDigest,
-        numerical_semantics: NumericalSemanticsVersion,
-        initial_stocks: InitialStocks,
-    ) -> Self {
-        Self {
-            run_id,
-            model_digest,
-            numerical_semantics,
-            initial_stocks,
+            initial_quantum_counts,
         }
     }
     #[must_use]
@@ -131,6 +136,75 @@ impl Genesis {
     pub fn initial_stocks(&self) -> &InitialStocks {
         &self.initial_stocks
     }
+    fn initial_quantum_count(&self, compartment: &CompartmentId, substance: &SubstanceId) -> u64 {
+        self.initial_quantum_counts
+            .get(&(compartment.clone(), substance.clone()))
+            .copied()
+            .map_or(0, QuantumCount::value)
+    }
+}
+
+/// An authoritative non-negative whole-quantum count below the binary64 exact-integer ceiling.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct QuantumCount(u64);
+
+impl QuantumCount {
+    /// Returns the authoritative whole-quantum count.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+impl TryFrom<u64> for QuantumCount {
+    type Error = TransferError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        if value > MAX_EXACT_WHOLE_MULTIPLE_COUNT {
+            return Err(TransferError::CountAboveCeiling { count: value });
+        }
+        Ok(Self(value))
+    }
+}
+
+/// One authoritative quantum count paired with its deterministic public projection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QuantumAmount {
+    count: QuantumCount,
+    amount: NonNegativeAmount,
+}
+
+impl QuantumAmount {
+    /// Projects one authoritative count under its declared quantum.
+    ///
+    /// # Errors
+    /// Returns [`TransferError::InvalidProjection`] if the count cannot become a finite amount.
+    pub fn new(quantum: Quantum, count: QuantumCount) -> Result<Self, TransferError> {
+        let projected =
+            quantum
+                .to_value(count.value())
+                .ok_or(TransferError::InvalidProjection {
+                    count: count.value(),
+                    quantum_bits: quantum.value().to_bits(),
+                })?;
+        let amount = NonNegativeAmount::try_from(projected).map_err(|_| {
+            TransferError::InvalidProjection {
+                count: count.value(),
+                quantum_bits: quantum.value().to_bits(),
+            }
+        })?;
+        Ok(Self { count, amount })
+    }
+
+    #[must_use]
+    pub const fn count(self) -> QuantumCount {
+        self.count
+    }
+
+    #[must_use]
+    pub const fn amount(self) -> NonNegativeAmount {
+        self.amount
+    }
 }
 
 /// An atomic movement of registered extensive amounts between typed endpoints.
@@ -140,21 +214,45 @@ pub struct Transfer {
     source: TransferEndpoint,
     target: TransferEndpoint,
     amounts: SparseSubstanceVector,
+    quantum_counts: BTreeMap<SubstanceId, QuantumCount>,
 }
 impl Transfer {
-    #[must_use]
+    /// Constructs a transfer from internally consistent count/projection pairs.
+    ///
+    /// # Errors
+    /// Returns [`TransferError`] for duplicate or unregistered substance coordinates.
     pub fn new(
         timestep: TimestepIndex,
         source: impl Into<TransferEndpoint>,
         target: impl Into<TransferEndpoint>,
-        amounts: SparseSubstanceVector,
-    ) -> Self {
-        Self {
+        registry: &SubstanceRegistry,
+        entries: impl IntoIterator<Item = (SubstanceId, QuantumAmount)>,
+    ) -> Result<Self, TransferError> {
+        let mut seen = BTreeSet::new();
+        let mut counts = BTreeMap::new();
+        let mut projected = Vec::new();
+        for (substance, quantum_amount) in entries {
+            if !registry.contains(&substance) {
+                return Err(TransferError::UnregisteredSubstance { substance });
+            }
+            if !seen.insert(substance.clone()) {
+                return Err(TransferError::DuplicateCount { substance });
+            }
+            if quantum_amount.count().value() == 0 {
+                continue;
+            }
+            counts.insert(substance.clone(), quantum_amount.count());
+            projected.push((substance, quantum_amount.amount()));
+        }
+        let amounts = SparseSubstanceVector::new(registry, projected)
+            .map_err(|_| TransferError::InvalidAmountVector)?;
+        Ok(Self {
             timestep,
             source: source.into(),
             target: target.into(),
             amounts,
-        }
+            quantum_counts: counts,
+        })
     }
     #[must_use]
     pub fn timestep(&self) -> TimestepIndex {
@@ -172,6 +270,31 @@ impl Transfer {
     pub fn amounts(&self) -> &SparseSubstanceVector {
         &self.amounts
     }
+    /// Returns the authoritative count for one transferred substance coordinate.
+    #[must_use]
+    pub fn quantum_count(&self, substance: &SubstanceId) -> Option<QuantumCount> {
+        self.quantum_counts.get(substance).copied()
+    }
+}
+
+/// Reports why a transfer cannot bind projected amounts to authoritative counts.
+#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
+pub enum TransferError {
+    /// Fires when a count exceeds the exact whole-number ceiling.
+    #[error("quantum count {count} exceeds the exactly countable ceiling")]
+    CountAboveCeiling { count: u64 },
+    /// Fires when the count entries repeat a substance coordinate.
+    #[error("transfer repeats the quantum count for substance `{substance}`")]
+    DuplicateCount { substance: SubstanceId },
+    /// Fires when count projection cannot produce a finite non-negative amount.
+    #[error("quantum count {count} cannot be projected under quantum bits {quantum_bits:#018x}")]
+    InvalidProjection { count: u64, quantum_bits: u64 },
+    /// Fires when an entry names a substance absent from the supplied registry.
+    #[error("transfer count names unregistered substance `{substance}`")]
+    UnregisteredSubstance { substance: SubstanceId },
+    /// Fires when the derived sparse amount vector rejects internally validated entries.
+    #[error("transfer count projection cannot form a sparse amount vector")]
+    InvalidAmountVector,
 }
 
 /// SHA-256 identity of Genesis and all Transfers preceding a completion seal.
@@ -446,11 +569,15 @@ pub enum RunStatus {
 }
 
 /// A deterministically replayed stock state at one point in record order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SignedQuantumCount(i64);
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct StockState {
     registry: SubstanceRegistry,
     finite: BTreeMap<(CompartmentId, SubstanceId), NonNegativeAmount>,
     boundary: BTreeMap<(CompartmentId, SubstanceId), SignedBoundaryBalance>,
+    quantum_counts: BTreeMap<(CompartmentId, SubstanceId), SignedQuantumCount>,
 }
 impl StockState {
     /// Queries a finite stock without conflating an unmodelled substance with zero.
@@ -483,6 +610,19 @@ impl StockState {
             .copied()
             .map_or(ValueState::Absent, ValueState::Present)
     }
+    /// Returns the authoritative finite-stock count for an exact conserved-state query.
+    #[must_use]
+    pub fn finite_quantum_count(
+        &self,
+        compartment: &CompartmentId,
+        substance: &SubstanceId,
+    ) -> Option<u64> {
+        let count = self
+            .quantum_counts
+            .get(&(compartment.clone(), substance.clone()))?;
+        u64::try_from(count.0).ok()
+    }
+
     pub fn finite_stocks(
         &self,
     ) -> impl Iterator<Item = (&(CompartmentId, SubstanceId), &NonNegativeAmount)> {
@@ -556,25 +696,10 @@ impl Replay {
         if !self.artifact.registry().contains(substance) {
             return Ok(ValueState::NotModelled);
         }
-        let semantics = self.artifact.versions().numerical_semantics();
-        let initial = seed_state(
-            self.artifact.topology(),
-            self.artifact.registry(),
-            self.artifact.initial_stocks(),
-        )?;
+        let initial = seed_state(&self.artifact)?;
         Ok(ValueState::Present(ConservationTotals {
-            genesis_total: reduce_state_total(
-                &initial,
-                self.artifact.topology(),
-                substance,
-                semantics,
-            )?,
-            final_total: reduce_state_total(
-                &self.final_state,
-                self.artifact.topology(),
-                substance,
-                semantics,
-            )?,
+            genesis_total: reduce_state_total(&initial, &self.artifact, substance)?,
+            final_total: reduce_state_total(&self.final_state, &self.artifact, substance)?,
         }))
     }
 }
@@ -653,6 +778,19 @@ fn replay(log: &AuthoritativeLog, artifact: Arc<ModelArtifact>) -> Result<Replay
     if log.genesis.initial_stocks != *artifact.initial_stocks() {
         return Err(ReplayError::GenesisStocksMismatch);
     }
+    for endpoint in artifact.topology().endpoints() {
+        if !matches!(endpoint, TopologyEndpoint::Finite(_)) {
+            continue;
+        }
+        for substance in artifact.registry().iter() {
+            let expected = artifact
+                .initial_quantum_count(endpoint.id(), substance)
+                .ok_or(ReplayError::GenesisStocksMismatch)?;
+            if log.genesis.initial_quantum_count(endpoint.id(), substance) != expected {
+                return Err(ReplayError::GenesisStocksMismatch);
+            }
+        }
+    }
     if let Some(seal) = &log.seal {
         if seal.final_timestep != artifact.horizon().last() {
             return Err(ReplayError::SealFinalTimestep {
@@ -678,11 +816,7 @@ fn replay(log: &AuthoritativeLog, artifact: Arc<ModelArtifact>) -> Result<Replay
             });
         }
     }
-    let mut state = seed_state(
-        artifact.topology(),
-        artifact.registry(),
-        artifact.initial_stocks(),
-    )?;
+    let mut state = seed_state(&artifact)?;
     let mut by_timestep = BTreeMap::new();
     let mut cursor = 0_usize;
     let horizon = artifact.horizon();
@@ -738,37 +872,46 @@ fn replay(log: &AuthoritativeLog, artifact: Arc<ModelArtifact>) -> Result<Replay
     })
 }
 
-fn seed_state(
-    topology: &Topology,
-    registry: &SubstanceRegistry,
-    initial: &InitialStocks,
-) -> Result<StockState, ReplayError> {
+fn seed_state(artifact: &ModelArtifact) -> Result<StockState, ReplayError> {
     let mut finite = BTreeMap::new();
     let mut boundary = BTreeMap::new();
-    for endpoint in topology.endpoints() {
-        for substance in registry.iter() {
+    let mut quantum_counts = BTreeMap::new();
+    for endpoint in artifact.topology().endpoints() {
+        for substance in artifact.registry().iter() {
             let key = (endpoint.id().clone(), substance.clone());
             match endpoint {
                 TopologyEndpoint::Finite(_) => {
-                    let amount = match initial
+                    let amount = match artifact
+                        .initial_stocks()
                         .amount(endpoint.id(), substance)
                         .map_err(|_| ReplayError::GenesisStocksMismatch)?
                     {
-                        ValueState::Present(v) => v,
+                        ValueState::Present(value) => value,
                         _ => return Err(ReplayError::GenesisRegistryMismatch),
                     };
-                    finite.insert(key, amount);
+                    let count = artifact
+                        .initial_quantum_count(endpoint.id(), substance)
+                        .ok_or(ReplayError::GenesisStocksMismatch)?;
+                    let count = i64::try_from(count).map_err(|_| ReplayError::NonFiniteFold {
+                        compartment: endpoint.id().clone(),
+                        substance: substance.clone(),
+                        timestep: artifact.horizon().first(),
+                    })?;
+                    finite.insert(key.clone(), amount);
+                    quantum_counts.insert(key, SignedQuantumCount(count));
                 }
                 TopologyEndpoint::Boundary(_) => {
-                    boundary.insert(key, SignedBoundaryBalance::ZERO);
+                    boundary.insert(key.clone(), SignedBoundaryBalance::ZERO);
+                    quantum_counts.insert(key, SignedQuantumCount(0));
                 }
             }
         }
     }
     Ok(StockState {
-        registry: registry.clone(),
+        registry: artifact.registry().clone(),
         finite,
         boundary,
+        quantum_counts,
     })
 }
 
@@ -779,16 +922,15 @@ fn apply_transfer(
 ) -> Result<(), ReplayError> {
     let mut staged = state.clone();
     apply_transfer_uncommitted(&mut staged, transfer, artifact)?;
-    let semantics = artifact.versions().numerical_semantics();
     for (substance, _) in transfer.amounts.iter() {
-        let before = reduce_state_total(state, artifact.topology(), substance, semantics)?;
-        let after = reduce_state_total(&staged, artifact.topology(), substance, semantics)?;
-        if before.to_bits() != after.to_bits() {
+        let before = reduce_state_count(state, artifact, substance)?;
+        let after = reduce_state_count(&staged, artifact, substance)?;
+        if before != after {
             return Err(ReplayError::NumericalConservationLoss {
                 substance: substance.clone(),
                 timestep: transfer.timestep,
-                before_bits: before.to_bits(),
-                after_bits: after.to_bits(),
+                before_count: before,
+                after_count: after,
             });
         }
     }
@@ -796,34 +938,49 @@ fn apply_transfer(
     Ok(())
 }
 
-fn reduce_state_total(
+fn reduce_state_count(
     state: &StockState,
-    topology: &Topology,
+    artifact: &ModelArtifact,
     substance: &SubstanceId,
-    semantics: NumericalSemanticsVersion,
-) -> Result<f64, ReplayError> {
-    let mut total = 0.0;
-    for endpoint in topology.endpoints() {
-        let value = match endpoint {
-            TopologyEndpoint::Finite(_) => state
-                .finite
-                .get(&(endpoint.id().clone(), substance.clone()))
-                .map(|value| value.value()),
-            TopologyEndpoint::Boundary(_) => state
-                .boundary
-                .get(&(endpoint.id().clone(), substance.clone()))
-                .map(|value| value.value()),
-        }
-        .ok_or_else(|| ReplayError::ConservationReduction {
-            substance: substance.clone(),
-        })?;
-        total = semantics
-            .add(total, value)
-            .map_err(|_| ReplayError::ConservationReduction {
+) -> Result<i128, ReplayError> {
+    let mut count = 0_i128;
+    for endpoint in artifact.topology().endpoints() {
+        let endpoint_count = state
+            .quantum_counts
+            .get(&(endpoint.id().clone(), substance.clone()))
+            .ok_or_else(|| ReplayError::ConservationReduction {
+                substance: substance.clone(),
+            })?;
+        count = count
+            .checked_add(i128::from(endpoint_count.0))
+            .ok_or_else(|| ReplayError::ConservationReduction {
                 substance: substance.clone(),
             })?;
     }
-    Ok(total)
+    Ok(count)
+}
+
+fn reduce_state_total(
+    state: &StockState,
+    artifact: &ModelArtifact,
+    substance: &SubstanceId,
+) -> Result<f64, ReplayError> {
+    let quantum =
+        artifact
+            .quantum(substance)
+            .ok_or_else(|| ReplayError::ConservationReduction {
+                substance: substance.clone(),
+            })?;
+    let count = i64::try_from(reduce_state_count(state, artifact, substance)?).map_err(|_| {
+        ReplayError::ConservationReduction {
+            substance: substance.clone(),
+        }
+    })?;
+    quantum
+        .to_signed_value(count)
+        .ok_or_else(|| ReplayError::ConservationReduction {
+            substance: substance.clone(),
+        })
 }
 
 fn apply_transfer_uncommitted(
@@ -847,11 +1004,9 @@ fn apply_transfer_uncommitted(
             timestep: transfer.timestep,
         });
     }
-    let connected = artifact
-        .topology()
-        .connections()
-        .iter()
-        .any(|c| c.source() == transfer.source.id() && c.target() == transfer.target.id());
+    let connected = artifact.topology().connections().iter().any(|connection| {
+        connection.source() == transfer.source.id() && connection.target() == transfer.target.id()
+    });
     if !connected {
         return Err(ReplayError::UndeclaredConnection {
             connection_source: transfer.source.id().clone(),
@@ -865,111 +1020,158 @@ fn apply_transfer_uncommitted(
         });
     }
     for (substance, amount) in transfer.amounts.iter() {
+        let quantum =
+            artifact
+                .quantum(substance)
+                .ok_or_else(|| ReplayError::ConservationReduction {
+                    substance: substance.clone(),
+                })?;
+        let authoritative =
+            transfer
+                .quantum_count(substance)
+                .ok_or_else(|| ReplayError::NonQuantumTransfer {
+                    substance: substance.clone(),
+                    timestep: transfer.timestep,
+                    amount_bits: amount.value().to_bits(),
+                    quantum_bits: quantum.value().to_bits(),
+                })?;
+        let projected = quantum.to_value(authoritative.value()).ok_or_else(|| {
+            ReplayError::NonQuantumTransfer {
+                substance: substance.clone(),
+                timestep: transfer.timestep,
+                amount_bits: amount.value().to_bits(),
+                quantum_bits: quantum.value().to_bits(),
+            }
+        })?;
+        if projected.to_bits() != amount.value().to_bits() {
+            return Err(ReplayError::NonQuantumTransfer {
+                substance: substance.clone(),
+                timestep: transfer.timestep,
+                amount_bits: amount.value().to_bits(),
+                quantum_bits: quantum.value().to_bits(),
+            });
+        }
+        let count =
+            i64::try_from(authoritative.value()).map_err(|_| ReplayError::NonFiniteFold {
+                compartment: transfer.source.id().clone(),
+                substance: substance.clone(),
+                timestep: transfer.timestep,
+            })?;
         let source_key = (transfer.source.id().clone(), substance.clone());
         let target_key = (transfer.target.id().clone(), substance.clone());
-        if transfer.source.is_finite() {
-            let current = state.finite.get(&source_key).copied().ok_or_else(|| {
+        let source_parts = state
+            .quantum_counts
+            .get(&source_key)
+            .copied()
+            .ok_or_else(|| ReplayError::EndpointKindMismatch {
+                compartment: transfer.source.id().clone(),
+            })?;
+        if transfer.source.is_finite() && count > source_parts.0 {
+            let available = state.finite.get(&source_key).copied().ok_or_else(|| {
                 ReplayError::EndpointKindMismatch {
                     compartment: transfer.source.id().clone(),
                 }
             })?;
-            if amount.value() > current.value() {
-                return Err(ReplayError::Overdraw {
-                    compartment: transfer.source.id().clone(),
-                    substance: substance.clone(),
-                    timestep: transfer.timestep,
-                    available_bits: current.value().to_bits(),
-                    requested_bits: amount.value().to_bits(),
-                });
-            }
-            let next = artifact
-                .versions()
-                .numerical_semantics()
-                .subtract(current.value(), amount.value())
-                .map_err(|_| ReplayError::NonFiniteFold {
-                    compartment: transfer.source.id().clone(),
-                    substance: substance.clone(),
-                    timestep: transfer.timestep,
-                })?;
-            let parsed =
-                NonNegativeAmount::try_from(next).map_err(|_| ReplayError::NonFiniteFold {
-                    compartment: transfer.source.id().clone(),
-                    substance: substance.clone(),
-                    timestep: transfer.timestep,
-                })?;
-            state.finite.insert(source_key, parsed);
-        } else {
-            update_boundary(
-                &mut state.boundary,
-                source_key,
-                -amount.value(),
-                artifact.versions().numerical_semantics(),
-                transfer,
-                substance,
-            )?;
+            return Err(ReplayError::Overdraw {
+                compartment: transfer.source.id().clone(),
+                substance: substance.clone(),
+                timestep: transfer.timestep,
+                available_bits: available.value().to_bits(),
+                requested_bits: amount.value().to_bits(),
+            });
         }
-        if transfer.target.is_finite() {
-            let current = state.finite.get(&target_key).copied().ok_or_else(|| {
-                ReplayError::EndpointKindMismatch {
-                    compartment: transfer.target.id().clone(),
-                }
+        let target_parts = state
+            .quantum_counts
+            .get(&target_key)
+            .copied()
+            .ok_or_else(|| ReplayError::EndpointKindMismatch {
+                compartment: transfer.target.id().clone(),
             })?;
-            let next = artifact
-                .versions()
-                .numerical_semantics()
-                .add(current.value(), amount.value())
-                .map_err(|_| ReplayError::NonFiniteFold {
+        let next_source =
+            SignedQuantumCount(source_parts.0.checked_sub(count).ok_or_else(|| {
+                ReplayError::NonFiniteFold {
+                    compartment: transfer.source.id().clone(),
+                    substance: substance.clone(),
+                    timestep: transfer.timestep,
+                }
+            })?);
+        let next_target =
+            SignedQuantumCount(target_parts.0.checked_add(count).ok_or_else(|| {
+                ReplayError::NonFiniteFold {
                     compartment: transfer.target.id().clone(),
                     substance: substance.clone(),
                     timestep: transfer.timestep,
-                })?;
-            let parsed =
-                NonNegativeAmount::try_from(next).map_err(|_| ReplayError::NonFiniteFold {
-                    compartment: transfer.target.id().clone(),
-                    substance: substance.clone(),
-                    timestep: transfer.timestep,
-                })?;
-            state.finite.insert(target_key, parsed);
-        } else {
-            update_boundary(
-                &mut state.boundary,
-                target_key,
-                amount.value(),
-                artifact.versions().numerical_semantics(),
-                transfer,
-                substance,
-            )?;
-        }
+                }
+            })?);
+        state.quantum_counts.insert(source_key.clone(), next_source);
+        state.quantum_counts.insert(target_key.clone(), next_target);
+        refresh_endpoint(
+            state,
+            &source_key,
+            transfer.source(),
+            quantum,
+            transfer,
+            substance,
+        )?;
+        refresh_endpoint(
+            state,
+            &target_key,
+            transfer.target(),
+            quantum,
+            transfer,
+            substance,
+        )?;
     }
     Ok(())
 }
-fn update_boundary(
-    map: &mut BTreeMap<(CompartmentId, SubstanceId), SignedBoundaryBalance>,
-    key: (CompartmentId, SubstanceId),
-    delta: f64,
-    semantics: NumericalSemanticsVersion,
+
+fn refresh_endpoint(
+    state: &mut StockState,
+    key: &(CompartmentId, SubstanceId),
+    endpoint: &TransferEndpoint,
+    quantum: crate::model_artifact::Quantum,
     transfer: &Transfer,
     substance: &SubstanceId,
 ) -> Result<(), ReplayError> {
-    let current = map
-        .get(&key)
-        .copied()
-        .ok_or_else(|| ReplayError::EndpointKindMismatch {
-            compartment: key.0.clone(),
-        })?;
-    let exact = semantics
-        .add(current.value(), delta)
-        .map_err(|_| ReplayError::NonFiniteFold {
-            compartment: key.0.clone(),
+    let parts = state.quantum_counts.get(key).copied().ok_or_else(|| {
+        ReplayError::EndpointKindMismatch {
+            compartment: endpoint.id().clone(),
+        }
+    })?;
+    if parts.0.unsigned_abs() > MAX_EXACT_WHOLE_MULTIPLE_COUNT {
+        return Err(ReplayError::NonFiniteFold {
+            compartment: endpoint.id().clone(),
+            substance: substance.clone(),
+            timestep: transfer.timestep,
+        });
+    }
+    let value = quantum
+        .to_signed_value(parts.0)
+        .ok_or_else(|| ReplayError::NonFiniteFold {
+            compartment: endpoint.id().clone(),
             substance: substance.clone(),
             timestep: transfer.timestep,
         })?;
-    let next = SignedBoundaryBalance::try_from(exact).map_err(|_| ReplayError::NonFiniteFold {
-        compartment: key.0.clone(),
-        substance: substance.clone(),
-        timestep: transfer.timestep,
-    })?;
-    map.insert(key, next);
+    match endpoint {
+        TransferEndpoint::Finite(_) => {
+            let amount =
+                NonNegativeAmount::try_from(value).map_err(|_| ReplayError::NonFiniteFold {
+                    compartment: endpoint.id().clone(),
+                    substance: substance.clone(),
+                    timestep: transfer.timestep,
+                })?;
+            state.finite.insert(key.clone(), amount);
+        }
+        TransferEndpoint::Boundary(_) => {
+            let balance =
+                SignedBoundaryBalance::try_from(value).map_err(|_| ReplayError::NonFiniteFold {
+                    compartment: endpoint.id().clone(),
+                    substance: substance.clone(),
+                    timestep: transfer.timestep,
+                })?;
+            state.boundary.insert(key.clone(), balance);
+        }
+    }
     Ok(())
 }
 fn validate_endpoint(endpoint: &TransferEndpoint, topology: &Topology) -> Result<(), ReplayError> {
@@ -991,15 +1193,25 @@ pub enum ReplayError {
     /// Fires when a modelled substance cannot be reduced without missing or non-finite state.
     #[error("cannot reduce conservation total for modelled substance `{substance}`")]
     ConservationReduction { substance: SubstanceId },
-    /// Fires when binary64 endpoint updates change the canonical conserved total.
+    /// Fires when an atomic transfer changes the exact conserved quantum count.
     #[error(
-        "transfer at {timestep:?} changes conserved total for `{substance}` from bits {before_bits:#018x} to {after_bits:#018x}"
+        "transfer at {timestep:?} changes conserved count for `{substance}` from {before_count} to {after_count}"
     )]
     NumericalConservationLoss {
         substance: SubstanceId,
         timestep: TimestepIndex,
-        before_bits: u64,
-        after_bits: u64,
+        before_count: i128,
+        after_count: i128,
+    },
+    /// Fires when a transfer amount is not the exact binary64 image of whole declared quanta.
+    #[error(
+        "transfer at {timestep:?} carries non-quantized amount bits {amount_bits:#018x} for `{substance}` under quantum bits {quantum_bits:#018x}"
+    )]
+    NonQuantumTransfer {
+        substance: SubstanceId,
+        timestep: TimestepIndex,
+        amount_bits: u64,
+        quantum_bits: u64,
     },
     /// Fires when a caller explicitly requires a completed run but receives a prefix.
     #[error("authoritative log is a resumable prefix without RunCompleted")]
@@ -1122,11 +1334,15 @@ fn digest_records(genesis: &Genesis, transfers: &[Transfer]) -> LogDigest {
 }
 
 fn write_records(genesis: &Genesis, transfers: &[Transfer], sink: &mut impl FnMut(&[u8])) {
-    sink(b"incidence:authoritative-log:v1\0");
+    sink(b"incidence:authoritative-log:v2\0");
     sink(genesis.run_id.as_bytes());
     sink(genesis.model_digest.as_bytes());
     sink(&[version_byte(genesis.numerical_semantics)]);
-    write_initial(sink, &genesis.initial_stocks);
+    write_initial(
+        sink,
+        &genesis.initial_stocks,
+        &genesis.initial_quantum_counts,
+    );
     sink(&(transfers.len() as u64).to_be_bytes());
     for transfer in transfers {
         sink(&transfer.timestep.value().to_be_bytes());
@@ -1137,6 +1353,10 @@ fn write_records(genesis: &Genesis, transfers: &[Transfer], sink: &mut impl FnMu
         sink(&(entries.len() as u64).to_be_bytes());
         for (substance, amount) in entries {
             write_string(sink, substance.as_str());
+            let Some(count) = transfer.quantum_count(substance) else {
+                panic!("Transfer construction guarantees one count per projected amount");
+            };
+            sink(&count.value().to_be_bytes());
             sink(&amount.value().to_bits().to_be_bytes());
         }
     }
@@ -1147,7 +1367,11 @@ fn version_byte(value: NumericalSemanticsVersion) -> u8 {
         NumericalSemanticsVersion::V2 => 2,
     }
 }
-fn write_initial(sink: &mut impl FnMut(&[u8]), initial: &InitialStocks) {
+fn write_initial(
+    sink: &mut impl FnMut(&[u8]),
+    initial: &InitialStocks,
+    counts: &BTreeMap<(CompartmentId, SubstanceId), QuantumCount>,
+) {
     let endpoints = initial.topology().endpoints().collect::<Vec<_>>();
     sink(&(endpoints.len() as u64).to_be_bytes());
     for endpoint in endpoints {
@@ -1173,6 +1397,10 @@ fn write_initial(sink: &mut impl FnMut(&[u8]), initial: &InitialStocks) {
         sink(&(amounts.len() as u64).to_be_bytes());
         for (substance, amount) in amounts {
             write_string(sink, substance.as_str());
+            let Some(count) = counts.get(&(compartment.clone(), substance.clone())) else {
+                panic!("Genesis construction guarantees one count per projected initial amount");
+            };
+            sink(&count.value().to_be_bytes());
             sink(&amount.value().to_bits().to_be_bytes());
         }
     }

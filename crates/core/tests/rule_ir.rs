@@ -1040,7 +1040,6 @@ fn malformed_wire_inputs_cannot_bypass_construction() {
         r#"{"rule_ir_version":"v1","numerical_semantics_version":"v1","expression":{"kind":"input","reference":{"id":"1input","value_kind":"scalar"}}}"#,
         r#"{"rule_ir_version":"v1","numerical_semantics_version":"v1","expression":{"kind":"add","lhs":{"kind":"input","reference":{"id":"truth-a","value_kind":"truth"}},"rhs":{"kind":"literal","value":1.25}}}"#,
         r#"{"rule_ir_version":"v2","numerical_semantics_version":"v1","expression":{"kind":"literal","value":1.25}}"#,
-        r#"{"rule_ir_version":"v1","numerical_semantics_version":"v2","expression":{"kind":"literal","value":1.25}}"#,
         r#"{"rule_ir_version":"v1","numerical_semantics_version":"v1","expression":{"kind":"input","reference":{"id":"input-a","value_kind":"number"}}}"#,
         r#"{"rule_ir_version":"v1","numerical_semantics_version":"v1","expression":{"kind":"comparison","comparison":"approximately_equal","lhs":{"kind":"literal","value":1.25},"rhs":{"kind":"literal","value":2.5}}}"#,
         r#"{"rule_ir_version":"v1","numerical_semantics_version":"v1","expression":{"kind":"literal","value":1.25,"opaque":true}}"#,

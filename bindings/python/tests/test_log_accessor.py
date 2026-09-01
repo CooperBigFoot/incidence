@@ -13,7 +13,7 @@ def test_completed_run_yields_authenticated_authoritative_log() -> None:
     canonical_bytes, digest = run.authoritative_log()
 
     assert isinstance(canonical_bytes, bytes)
-    assert canonical_bytes.startswith(b"incidence:authoritative-log:v1\0")
+    assert canonical_bytes.startswith(b"incidence:authoritative-log:v2\0")
     assert digest == hashlib.sha256(canonical_bytes).hexdigest()
     assert run.authoritative_log() == (canonical_bytes, digest)
 

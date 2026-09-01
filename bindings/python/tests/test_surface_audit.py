@@ -24,6 +24,7 @@ def test_complete_public_surface_has_no_bare_time_series() -> None:
     assert set(name for name in dir(run) if not name.startswith("_")) == {
         "authoritative_log",
         "model_digest",
+        "quantum",
         "replay_against",
         "transfer_series",
     }
@@ -40,6 +41,6 @@ def test_complete_public_surface_has_no_bare_time_series() -> None:
         for name, member in inspect.getmembers(incidence.CompletedRun)
         if not name.startswith("_") and callable(member)
     ]
-    assert public_methods == ["authoritative_log", "replay_against", "transfer_series"]
+    assert public_methods == ["authoritative_log", "quantum", "replay_against", "transfer_series"]
     assert run.replay_against(run) is None
     assert not is_numeric_sequence(result)

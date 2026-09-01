@@ -4,9 +4,12 @@ use incidence_core::endpoints::{BoundaryAccount, FiniteCompartment};
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{
-    AuthoritativeLog, CompletenessReader, Genesis, Record, ReplayError, RunId, RunStatus, Transfer,
+    AuthoritativeLog, CompletenessReader, Genesis, QuantumAmount, QuantumCount, Record,
+    ReplayError, RunId, RunStatus, Transfer,
 };
-use incidence_core::model_artifact::{ModelArtifact, ModelArtifactArchive, UnitId};
+use incidence_core::model_artifact::{
+    ModelArtifact, ModelArtifactArchive, Quantum, SubstanceUnit, UnitId,
+};
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::presence::ValueState;
 use incidence_core::projection::ProjectionSet;
@@ -61,9 +64,21 @@ pub(crate) fn fixture(salt: bool, forcing_stock: f64) -> ModelArtifact {
         CalendarOrigin::new(CalendarInstant::from_unix_seconds(0)),
         TimestepDuration::from_seconds(1).expect("duration"),
     );
-    let mut units = vec![(water, UnitId::parse("kg").expect("unit"))];
+    let mut units = vec![(
+        water,
+        SubstanceUnit::new(
+            UnitId::parse("kg").expect("unit"),
+            Quantum::try_from(1.0e-6).expect("valid quantum"),
+        ),
+    )];
     if salt {
-        units.push((salt_id, UnitId::parse("kg").expect("unit")));
+        units.push((
+            salt_id,
+            SubstanceUnit::new(
+                UnitId::parse("kg").expect("unit"),
+                Quantum::try_from(1.0e-6).expect("valid quantum"),
+            ),
+        ));
     }
     ModelArtifact::builder(topology, registry, stocks, calendar, horizon)
         .with_projections(ProjectionSet::new(vec![], vec![]).expect("projections"))
@@ -84,7 +99,7 @@ fn replay_is_dense_exact_and_seal_distinguishes_prefix() {
     let artifact = fixture(false, 10.0);
     let registry = artifact.registry();
     let water = SubstanceId::parse("water").expect("water");
-    let amount = SparseSubstanceVector::new(
+    let _amount = SparseSubstanceVector::new(
         registry,
         [(
             water.clone(),
@@ -93,12 +108,23 @@ fn replay_is_dense_exact_and_seal_distinguishes_prefix() {
     )
     .expect("vector");
     let mut log = AuthoritativeLog::for_run(RunId::from_bytes([7; 16]), &artifact);
-    log.append(Transfer::new(
-        TimestepIndex::new(1),
-        endpoint(&artifact, "store"),
-        endpoint(&artifact, "route"),
-        amount,
-    ))
+    log.append(
+        Transfer::new(
+            TimestepIndex::new(1),
+            endpoint(&artifact, "store"),
+            endpoint(&artifact, "route"),
+            artifact.registry(),
+            [(
+                water.clone(),
+                QuantumAmount::new(
+                    artifact.quantum(&water).expect("quantum"),
+                    QuantumCount::try_from(3000000).expect("count"),
+                )
+                .expect("projection"),
+            )],
+        )
+        .expect("count-bound transfer"),
+    )
     .expect("append");
     let mut archive = ModelArtifactArchive::new();
     archive.insert(artifact).expect("archive");
@@ -152,16 +178,20 @@ fn unmodelled_is_not_zero_and_digest_mismatch_is_rejected() {
 #[test]
 fn zero_transfer_is_authoritative_and_seal_authenticates_it() {
     let artifact = fixture(false, 10.0);
-    let empty = SparseSubstanceVector::new(artifact.registry(), []).expect("empty");
+    let _empty = SparseSubstanceVector::new(artifact.registry(), []).expect("empty");
     let mut without = AuthoritativeLog::for_run(RunId::from_bytes([7; 16]), &artifact);
     let first = without.digest();
     without
-        .append(Transfer::new(
-            TimestepIndex::new(0),
-            endpoint(&artifact, "store"),
-            endpoint(&artifact, "route"),
-            empty,
-        ))
+        .append(
+            Transfer::new(
+                TimestepIndex::new(0),
+                endpoint(&artifact, "store"),
+                endpoint(&artifact, "route"),
+                artifact.registry(),
+                [],
+            )
+            .expect("count-bound transfer"),
+        )
         .expect("append");
     assert_ne!(first, without.digest());
     assert_eq!(without.transfer_count(), 1);

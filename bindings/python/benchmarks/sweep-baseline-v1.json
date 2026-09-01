@@ -68,8 +68,8 @@
     "uv": "uv 0.12.1 (329541a50 2026-07-31 aarch64-apple-darwin)"
   },
   "workload": {
-    "base_document_json_bytes": 200023,
-    "base_document_sha256": "76eafe8ade0b513626b5a923988147f0b967f2316f3a124352f5ce9d7a024818",
+    "base_document_json_bytes": 200039,
+    "base_document_sha256": "4c03360a48c78c79965663b978e9afc674776893a0cf9886c94f4c5479dc193d",
     "compartments": 50,
     "forcing_series": 20,
     "forcing_values_per_trial": 43820,

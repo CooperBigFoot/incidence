@@ -4,8 +4,8 @@ use incidence_core::dense_projection::{DenseProjectionError, DenseTransferProjec
 use incidence_core::endpoints::{BoundaryAccount, FiniteCompartment};
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
-use incidence_core::ledger::{AuthoritativeLog, RunId, Transfer};
-use incidence_core::model_artifact::{ModelArtifact, UnitId};
+use incidence_core::ledger::{AuthoritativeLog, QuantumAmount, QuantumCount, RunId, Transfer};
+use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::presence::ValueState;
 use incidence_core::projection::{AuthoritativeFactSelector, ProjectionSet};
@@ -54,7 +54,13 @@ fn fixture() -> ModelArtifact {
     let horizon = RunHorizon::new(TimestepIndex::new(10), TimestepIndex::new(59)).expect("horizon");
     ModelArtifact::builder(topology, registry, stocks, calendar, horizon)
         .with_projections(ProjectionSet::new(vec![], vec![]).expect("projection set"))
-        .with_units(vec![(water, UnitId::parse("m3").expect("unit"))])
+        .with_units(vec![(
+            water,
+            SubstanceUnit::new(
+                UnitId::parse("m3").expect("unit"),
+                Quantum::try_from(1.0e-6).expect("valid quantum"),
+            ),
+        )])
         .build()
         .expect("artifact")
 }
@@ -71,7 +77,7 @@ fn endpoint(artifact: &ModelArtifact, id: &str) -> TopologyEndpoint {
 fn dense_projection_preserves_a_forty_step_dry_stretch() {
     let artifact = fixture();
     let water = SubstanceId::parse("water").expect("fixture substance");
-    let amount = SparseSubstanceVector::new(
+    let _amount = SparseSubstanceVector::new(
         artifact.registry(),
         [(
             water.clone(),
@@ -81,12 +87,23 @@ fn dense_projection_preserves_a_forty_step_dry_stretch() {
     .expect("transfer vector");
     let mut log = AuthoritativeLog::for_run(RunId::from_bytes([5; 16]), &artifact);
     for timestep in [14, 55] {
-        log.append(Transfer::new(
-            TimestepIndex::new(timestep),
-            endpoint(&artifact, "store"),
-            endpoint(&artifact, "downstream"),
-            amount.clone(),
-        ))
+        log.append(
+            Transfer::new(
+                TimestepIndex::new(timestep),
+                endpoint(&artifact, "store"),
+                endpoint(&artifact, "downstream"),
+                artifact.registry(),
+                [(
+                    water.clone(),
+                    QuantumAmount::new(
+                        artifact.quantum(&water).expect("quantum"),
+                        QuantumCount::try_from(1000000).expect("count"),
+                    )
+                    .expect("projection"),
+                )],
+            )
+            .expect("count-bound transfer"),
+        )
         .expect("append transfer");
     }
     log.seal(artifact.horizon().last()).expect("seal log");

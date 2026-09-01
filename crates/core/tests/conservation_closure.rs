@@ -3,7 +3,8 @@ mod criterion_suite;
 
 use incidence_core::identity::SubstanceId;
 use incidence_core::ledger::{
-    AuthoritativeLog, RunId, Transfer, incidence_columns_close, replay_with_artifact,
+    AuthoritativeLog, QuantumAmount, QuantumCount, RunId, Transfer, incidence_columns_close,
+    replay_with_artifact,
 };
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::presence::ValueState;
@@ -14,7 +15,7 @@ use incidence_core::temporal::TimestepIndex;
 fn finite_and_boundary_accounts_close_exactly() {
     let artifact = criterion_suite::fixture(false, 10.0);
     let water = SubstanceId::parse("water").expect("valid substance");
-    let amount = || {
+    let _amount = || {
         SparseSubstanceVector::new(
             artifact.registry(),
             [(
@@ -25,19 +26,41 @@ fn finite_and_boundary_accounts_close_exactly() {
         .expect("valid vector")
     };
     let mut log = AuthoritativeLog::for_run(RunId::from_bytes([9; 16]), &artifact);
-    log.append(Transfer::new(
-        TimestepIndex::new(0),
-        criterion_suite::endpoint(&artifact, "store"),
-        criterion_suite::endpoint(&artifact, "route"),
-        amount(),
-    ))
+    log.append(
+        Transfer::new(
+            TimestepIndex::new(0),
+            criterion_suite::endpoint(&artifact, "store"),
+            criterion_suite::endpoint(&artifact, "route"),
+            artifact.registry(),
+            [(
+                water.clone(),
+                QuantumAmount::new(
+                    artifact.quantum(&water).expect("quantum"),
+                    QuantumCount::try_from(3000000).expect("count"),
+                )
+                .expect("projection"),
+            )],
+        )
+        .expect("count-bound transfer"),
+    )
     .expect("first transfer");
-    log.append(Transfer::new(
-        TimestepIndex::new(1),
-        criterion_suite::endpoint(&artifact, "route"),
-        criterion_suite::endpoint(&artifact, "outside_out"),
-        amount(),
-    ))
+    log.append(
+        Transfer::new(
+            TimestepIndex::new(1),
+            criterion_suite::endpoint(&artifact, "route"),
+            criterion_suite::endpoint(&artifact, "outside_out"),
+            artifact.registry(),
+            [(
+                water.clone(),
+                QuantumAmount::new(
+                    artifact.quantum(&water).expect("quantum"),
+                    QuantumCount::try_from(3000000).expect("count"),
+                )
+                .expect("projection"),
+            )],
+        )
+        .expect("count-bound transfer"),
+    )
     .expect("second transfer");
     assert!(incidence_columns_close(&log));
     let replay = replay_with_artifact(&log, &artifact).expect("exact replay");
