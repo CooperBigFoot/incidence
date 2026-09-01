@@ -1669,7 +1669,10 @@ fn both_dependency_entry_families_reject_unknown_kind_order_and_cycles() {
             Ok(_) => panic!("invalid dependency wire unexpectedly decoded"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains(&expected.to_string()));
+        assert!(
+            error.to_string().contains(&expected.to_string()),
+            "actual: {error}; expected: {expected}"
+        );
     };
     let mut direct_unknown_wire = direct_wire.clone();
     direct_unknown_wire["specifications"][1]["spec"]["source"]["reference"]["id"] =
@@ -1684,6 +1687,7 @@ fn both_dependency_entry_families_reject_unknown_kind_order_and_cycles() {
     let mut direct_kind_wire = direct_wire.clone();
     direct_kind_wire["specifications"][1]["spec"]["source"]["reference"]["value_kind"] =
         serde_json::json!("scalar");
+    direct_kind_wire["specifications"][1]["value_kind"] = serde_json::json!("scalar");
     assert_wire_error(
         direct_kind_wire,
         ProjectionError::ProjectionReferenceKind {
