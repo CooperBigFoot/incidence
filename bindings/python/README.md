@@ -28,6 +28,9 @@ assert len(release.timesteps) == len(release.values) == len(release.presence)
   value, and presence arrays of equal length. Dry modelled timesteps contain `0.0` with
   `"present"`; positions outside the horizon contain `None` with `"absent"`; substances outside
   the model registry contain `None` with `"not_modelled"`.
+- `CompletedRun.transfer_count_series(...)` applies the same selector, range, and presence
+  semantics but returns authoritative whole-quantum Python integers. It folds stored transfer
+  counts directly and never decodes them from projected floating-point amounts.
 - `CompletedRun.authoritative_log()` returns the authoritative log's canonical bytes and its
   lowercase hexadecimal digest as a tuple. The bytes are the exact payload authenticated by the
   core digest.
