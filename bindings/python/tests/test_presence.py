@@ -48,3 +48,20 @@ def test_undeclared_substance_never_becomes_zero() -> None:
     assert series.presence == ["not_modelled"] * 42
     assert series.values == [None] * 42
     assert 0.0 not in series.values
+
+
+def test_authoritative_count_series_retains_zero_absence_and_not_modelled() -> None:
+    run = incidence.compile_model(dry_model_document()).run(bytes([0x44]) * 16)
+
+    modelled = run.transfer_count_series(
+        "demand", "water", direction="outgoing", first=0, last=41
+    )
+    not_modelled = run.transfer_count_series(
+        "demand", "salt", direction="outgoing", first=0, last=41
+    )
+
+    assert isinstance(modelled, incidence.PresenceCountSeries)
+    assert modelled.presence == ["absent"] + ["present"] * 40 + ["absent"]
+    assert modelled.values == [None] + [0] * 40 + [None]
+    assert not_modelled.presence == ["not_modelled"] * 42
+    assert not_modelled.values == [None] * 42

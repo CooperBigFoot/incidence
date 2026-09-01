@@ -149,6 +149,9 @@ impl Genesis {
 pub struct QuantumCount(u64);
 
 impl QuantumCount {
+    /// The additive identity for authoritative whole-quantum counts.
+    pub const ZERO: Self = Self(0);
+
     /// Returns the authoritative whole-quantum count.
     #[must_use]
     pub const fn value(self) -> u64 {

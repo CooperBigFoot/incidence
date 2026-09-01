@@ -3,10 +3,10 @@
 //! This crate is only a containment and transport boundary. Domain validation, execution, and
 //! presence semantics remain in `incidence-core`.
 
-use incidence_core::dense_projection::DenseTransferProjection;
+use incidence_core::dense_projection::{DenseTransferCountProjection, DenseTransferProjection};
 use incidence_core::execution::execute_model;
 use incidence_core::identity::{CompartmentId, SubstanceId};
-use incidence_core::ledger::{AuthoritativeLog, RunId, replay_with_artifact};
+use incidence_core::ledger::{AuthoritativeLog, QuantumCount, RunId, replay_with_artifact};
 use incidence_core::model_artifact::{ModelArtifact, RuleParameterSubstitution};
 use incidence_core::model_document::ModelDocument;
 use incidence_core::non_negative_amount::NonNegativeAmount;
@@ -122,6 +122,84 @@ impl PresenceSeries {
     }
 }
 
+/// A sequence of authoritative counts that retains the presence state for every position.
+#[pyclass(frozen, module = "incidence._incidence", name = "_PresenceCountValues")]
+struct PresenceCountValues {
+    values: Vec<Option<u64>>,
+    presence: Vec<&'static str>,
+}
+
+#[pymethods]
+impl PresenceCountValues {
+    /// Per-position states corresponding exactly to this count sequence.
+    #[getter]
+    fn presence(&self) -> Vec<&'static str> {
+        self.presence.clone()
+    }
+
+    fn __len__(&self) -> usize {
+        self.values.len()
+    }
+
+    fn __getitem__(&self, index: isize) -> PyResult<Option<u64>> {
+        let length = isize::try_from(self.values.len())
+            .map_err(|_| PyIndexError::new_err("presence count sequence is too large to index"))?;
+        let resolved = if index < 0 {
+            length.checked_add(index)
+        } else {
+            Some(index)
+        };
+        let value = resolved
+            .filter(|resolved| *resolved >= 0)
+            .and_then(|resolved| usize::try_from(resolved).ok())
+            .and_then(|resolved| self.values.get(resolved))
+            .ok_or_else(|| PyIndexError::new_err("presence count index out of range"))?;
+        Ok(*value)
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other
+            .extract::<Vec<Option<u64>>>()
+            .is_ok_and(|values| values == self.values)
+    }
+}
+
+/// A time-indexed result whose authoritative counts retain their presence states.
+#[pyclass(frozen, module = "incidence._incidence")]
+struct PresenceCountSeries {
+    timesteps: Vec<u64>,
+    values: Vec<Option<u64>>,
+    presence: Vec<&'static str>,
+}
+
+#[pymethods]
+impl PresenceCountSeries {
+    /// The requested timestep coordinates, in ascending order.
+    #[getter]
+    fn timesteps(&self) -> Vec<u64> {
+        self.timesteps.clone()
+    }
+
+    /// Counts and their corresponding presence states at the requested coordinates.
+    #[getter]
+    fn values(&self) -> PresenceCountValues {
+        PresenceCountValues {
+            values: self.values.clone(),
+            presence: self.presence.clone(),
+        }
+    }
+
+    /// Per-position states: `present`, `absent`, or `not_modelled`.
+    #[getter]
+    fn presence(&self) -> Vec<&'static str> {
+        self.presence.clone()
+    }
+
+    fn __len__(&self) -> usize {
+        self.timesteps.len()
+    }
+}
+
 fn panic_message(payload: Box<dyn Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_owned()
@@ -203,6 +281,27 @@ fn append_state(
     match state {
         ValueState::Present(amount) => {
             values.push(Some(amount.value()));
+            presence.push("present");
+        }
+        ValueState::Absent => {
+            values.push(None);
+            presence.push("absent");
+        }
+        ValueState::NotModelled => {
+            values.push(None);
+            presence.push("not_modelled");
+        }
+    }
+}
+
+fn append_count_state(
+    state: ValueState<QuantumCount>,
+    values: &mut Vec<Option<u64>>,
+    presence: &mut Vec<&'static str>,
+) {
+    match state {
+        ValueState::Present(count) => {
+            values.push(Some(count.value()));
             presence.push("present");
         }
         ValueState::Absent => {
@@ -432,6 +531,82 @@ impl CompletedRun {
                 );
             }
             Ok(PresenceSeries {
+                timesteps,
+                values,
+                presence,
+            })
+        })
+    }
+
+    /// Read one dense authoritative transfer count series with presence at every requested timestep.
+    #[pyo3(signature = (compartment, substance, *, direction = "outgoing", first = None, last = None))]
+    fn transfer_count_series(
+        &self,
+        compartment: &str,
+        substance: &str,
+        direction: &str,
+        first: Option<u64>,
+        last: Option<u64>,
+    ) -> PyResult<PresenceCountSeries> {
+        contain(|| {
+            let compartment = CompartmentId::parse(compartment)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            let substance = SubstanceId::parse(substance)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            let selector = series_selector(direction, compartment, substance)?;
+            let projection = DenseTransferCountProjection::from_log_with_artifact(
+                &self.log,
+                &self.artifact,
+                selector,
+            )
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+
+            let first = first.unwrap_or_else(|| projection.horizon().first().value());
+            let last = last.unwrap_or_else(|| projection.horizon().last().value());
+            if last < first {
+                return Err(PyValueError::new_err(format!(
+                    "series range is reversed: first timestep {first}, last timestep {last}"
+                )));
+            }
+            let length = last
+                .checked_sub(first)
+                .and_then(|span| span.checked_add(1))
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "series range from {first} through {last} cannot be represented"
+                    ))
+                })?;
+            if length > MAX_SERIES_LENGTH {
+                return Err(PyValueError::new_err(format!(
+                    "series range from {first} through {last} exceeds maximum length {MAX_SERIES_LENGTH}"
+                )));
+            }
+            let capacity = usize::try_from(length).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "series range from {first} through {last} cannot be materialised"
+                ))
+            })?;
+            let mut timesteps = Vec::new();
+            let mut values = Vec::new();
+            let mut presence = Vec::new();
+            timesteps.try_reserve_exact(capacity).map_err(|error| {
+                PyValueError::new_err(format!("cannot allocate requested series: {error}"))
+            })?;
+            values.try_reserve_exact(capacity).map_err(|error| {
+                PyValueError::new_err(format!("cannot allocate requested series: {error}"))
+            })?;
+            presence.try_reserve_exact(capacity).map_err(|error| {
+                PyValueError::new_err(format!("cannot allocate requested series: {error}"))
+            })?;
+            for timestep in first..=last {
+                timesteps.push(timestep);
+                append_count_state(
+                    projection.value_at(TimestepIndex::new(timestep)),
+                    &mut values,
+                    &mut presence,
+                );
+            }
+            Ok(PresenceCountSeries {
                 timesteps,
                 values,
                 presence,
@@ -772,6 +947,8 @@ fn initialize(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<CompletedRun>()?;
     module.add_class::<PresenceValues>()?;
     module.add_class::<PresenceSeries>()?;
+    module.add_class::<PresenceCountValues>()?;
+    module.add_class::<PresenceCountSeries>()?;
     module.add_function(wrap_pyfunction!(compile_model, module)?)?;
     module.add_function(wrap_pyfunction!(literal, module)?)?;
     module.add_function(wrap_pyfunction!(param, module)?)?;

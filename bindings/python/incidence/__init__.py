@@ -5,6 +5,7 @@ from . import _incidence
 CompiledModel = _incidence.CompiledModel
 CompletedRun = _incidence.CompletedRun
 PresenceSeries = _incidence.PresenceSeries
+PresenceCountSeries = _incidence.PresenceCountSeries
 compile_model = _incidence.compile_model
 
 literal = _incidence.literal
@@ -78,7 +79,7 @@ def model_document(**components):
 
 
 __all__ = [
-    "CompiledModel", "CompletedRun", "PresenceSeries", "compile_model", "literal", "param", "parameter", "input",
+    "CompiledModel", "CompletedRun", "PresenceSeries", "PresenceCountSeries", "compile_model", "literal", "param", "parameter", "input",
     "forcing", "projection", "add", "mul", "multiply", "power", "min", "minimum", "max",
     "maximum", "clamp", "compare", "select", "table_lookup", "interpolated_table",
     "roundtrip_expression", "retain_all", "release_all", "rule", "model_document",
