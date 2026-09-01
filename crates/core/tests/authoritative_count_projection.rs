@@ -54,7 +54,11 @@ fn authoritative_count_projection_does_not_redecode_an_ambiguous_f64_sum() {
     for _ in 0..2 {
         let transfer = Transfer::new(
             TimestepIndex::new(0),
-            artifact.topology().endpoint(&outside).expect("outside").clone(),
+            artifact
+                .topology()
+                .endpoint(&outside)
+                .expect("outside")
+                .clone(),
             artifact.topology().endpoint(&store).expect("store").clone(),
             artifact.registry(),
             [(
@@ -75,12 +79,8 @@ fn authoritative_count_projection_does_not_redecode_an_ambiguous_f64_sum() {
         compartment: store.clone(),
         substance: water.clone(),
     };
-    let public = DenseTransferProjection::from_log_with_artifact(
-        &log,
-        &artifact,
-        selector.clone(),
-    )
-    .expect("public projection");
+    let public = DenseTransferProjection::from_log_with_artifact(&log, &artifact, selector.clone())
+        .expect("public projection");
     let ValueState::Present(projected) = public.value_at(TimestepIndex::new(0)) else {
         panic!("expected present public value");
     };
@@ -89,10 +89,10 @@ fn authoritative_count_projection_does_not_redecode_an_ambiguous_f64_sum() {
 
     let counts = DenseTransferCountProjection::from_log_with_artifact(&log, &artifact, selector)
         .expect("authoritative count projection");
-    assert_eq!(
-        counts.value_at(TimestepIndex::new(0)),
-        ValueState::Present(MERGED_COUNT)
-    );
+    let ValueState::Present(merged) = counts.value_at(TimestepIndex::new(0)) else {
+        panic!("expected present authoritative count");
+    };
+    assert_eq!(merged.value(), MERGED_COUNT);
     let replay = replay_with_artifact(&log, &artifact).expect("replay");
     assert_eq!(
         replay.final_state().finite_quantum_count(&store, &water),
