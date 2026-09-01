@@ -150,6 +150,9 @@ impl Quantum {
         if !value.is_finite() || value < 0.0 || value > self.countable_ceiling() {
             return None;
         }
+        if let Some(count) = self.whole_count(value) {
+            return Some(count);
+        }
         let quotient = (value / self.0).floor();
         if !quotient.is_finite() || !(0.0..=MAX_EXACT_WHOLE_MULTIPLES).contains(&quotient) {
             return None;
