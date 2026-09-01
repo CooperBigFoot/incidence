@@ -280,3 +280,33 @@ fn repeated_quantum_execution_has_identical_log_digest() {
 
     assert_eq!(first.digest(), second.digest());
 }
+
+#[test]
+fn each_computed_branch_flooring_error_is_below_one_quantum_across_a_range() {
+    let quantum = 0.125;
+    for index in 1_u64..=128 {
+        let target = (index as f64).mul_add(0.137, 0.019);
+        let artifact = artifact(quantum, 100.0, 0.0, 0.0, [target, 0.0]);
+        let water = SubstanceId::parse("water").expect("valid substance");
+        let log = execute_model(
+            &artifact,
+            RunId::from_bytes(index.to_be_bytes().repeat(2).try_into().expect("run id")),
+        )
+        .expect("valid run");
+        let represented = log
+            .transfers()
+            .iter()
+            .find(|transfer| transfer.target().id() == &compartment("sink-a"))
+            .map(|transfer| match transfer.amounts().amount(&water) {
+                ValueState::Present(amount) => amount.value(),
+                state => panic!("modelled branch amount must be present: {state:?}"),
+            })
+            .unwrap_or(0.0);
+
+        assert!(represented <= target, "{represented} > {target}");
+        assert!(
+            target - represented < quantum,
+            "target={target}, represented={represented}"
+        );
+    }
+}

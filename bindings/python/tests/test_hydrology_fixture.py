@@ -17,7 +17,7 @@ RULE_COMPARTMENTS = (
     "demand",
 )
 RUN_ID = bytes([0x71]) * 16
-RUST_LOG_DIGEST = "ab7ea6531e55332f155caf6f685c6551ee86ae1a7d8d749bbe37925137fde82a"
+RUST_LOG_DIGEST = "60c120b0d2a03ae4c9aada1d938a5d50be80398ac6d786cb2350c09b58e4ab67"
 
 
 def _expression_node(kind: str, lhs: dict, rhs: dict) -> dict:
