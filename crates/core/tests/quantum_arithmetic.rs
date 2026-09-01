@@ -310,3 +310,18 @@ fn each_computed_branch_flooring_error_is_below_one_quantum_across_a_range() {
         );
     }
 }
+
+#[test]
+fn release_all_of_an_exact_quantum_image_leaves_no_residual_count() {
+    let artifact = artifact(0.1, 4.3, 0.0, 0.0, [4.3, 0.0]);
+    let water = SubstanceId::parse("water").expect("valid substance");
+    let log = execute_model(&artifact, RunId::from_bytes([0x47; 16])).expect("valid run");
+    let replay = replay_with_artifact(&log, &artifact).expect("valid replay");
+
+    assert_eq!(
+        replay
+            .final_state()
+            .finite_stock(&compartment("source"), &water),
+        ValueState::Present(0.0.try_into().expect("amount"))
+    );
+}
