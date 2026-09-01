@@ -134,6 +134,81 @@ fn artifact_with_last_timestep(
         .expect("valid artifact")
 }
 
+fn release_all_artifact(quantum_value: f64, source_stock: f64) -> ModelArtifact {
+    let source = compartment("source");
+    let sink = compartment("sink");
+    let topology = Topology::new(
+        [
+            TopologyEndpoint::Finite(FiniteCompartment::new(source.clone())),
+            TopologyEndpoint::Finite(FiniteCompartment::new(sink.clone())),
+        ],
+        [DirectedConnection::new(source.clone(), sink.clone())],
+    )
+    .expect("valid topology");
+    let water = SubstanceId::parse("water").expect("valid substance");
+    let registry = SubstanceRegistry::new([water.clone()]).expect("valid registry");
+    let stocks = InitialStocks::new(
+        &topology,
+        &registry,
+        [(source.clone(), source_stock), (sink.clone(), 0.0)].map(|(id, value)| {
+            (
+                id,
+                SparseSubstanceVector::new(
+                    &registry,
+                    [(
+                        water.clone(),
+                        NonNegativeAmount::try_from(value).expect("valid amount"),
+                    )],
+                )
+                .expect("valid stock vector"),
+            )
+        }),
+    )
+    .expect("valid stocks");
+    let release = branch("release");
+    let rule = RuleDefinition::new(
+        source.clone(),
+        water.clone(),
+        literal(source_stock),
+        PartitionExpr::release_all(
+            RuleIrVersion::V1,
+            NumericalSemanticsVersion::V1,
+            release.clone(),
+        ),
+        [],
+    )
+    .expect("valid rule");
+    let bindings = ExecutionBindings::new(
+        [TransferBranchBinding::new(
+            source,
+            water.clone(),
+            release,
+            sink,
+        )],
+        [],
+    )
+    .expect("valid bindings");
+    let calendar = FixedStepCalendar::new(
+        CalendarOrigin::new(CalendarInstant::from_unix_seconds(0)),
+        TimestepDuration::from_seconds(1).expect("valid duration"),
+    );
+    let horizon =
+        RunHorizon::new(TimestepIndex::new(0), TimestepIndex::new(0)).expect("valid horizon");
+    ModelArtifact::builder(topology, registry, stocks, calendar, horizon)
+        .with_projections(ProjectionSet::new(vec![], vec![]).expect("valid projections"))
+        .with_rules(vec![rule])
+        .with_execution_bindings(bindings)
+        .with_units(vec![(
+            water,
+            SubstanceUnit::new(
+                UnitId::parse("m3").expect("valid unit"),
+                Quantum::try_from(quantum_value).expect("valid quantum"),
+            ),
+        )])
+        .build()
+        .expect("valid artifact")
+}
+
 fn artifact(
     quantum_value: f64,
     source_stock: f64,
@@ -312,10 +387,25 @@ fn each_computed_branch_flooring_error_is_below_one_quantum_across_a_range() {
 }
 
 #[test]
-fn release_all_of_an_exact_quantum_image_leaves_no_residual_count() {
+fn expression_partition_of_an_exact_quantum_image_leaves_no_residual_count() {
     let artifact = artifact(0.1, 4.3, 0.0, 0.0, [4.3, 0.0]);
     let water = SubstanceId::parse("water").expect("valid substance");
     let log = execute_model(&artifact, RunId::from_bytes([0x47; 16])).expect("valid run");
+    let replay = replay_with_artifact(&log, &artifact).expect("valid replay");
+
+    assert_eq!(
+        replay
+            .final_state()
+            .finite_stock(&compartment("source"), &water),
+        ValueState::Present(0.0.try_into().expect("amount"))
+    );
+}
+
+#[test]
+fn release_all_of_an_exact_quantum_image_leaves_no_residual_count() {
+    let artifact = release_all_artifact(0.1, 4.3);
+    let water = SubstanceId::parse("water").expect("valid substance");
+    let log = execute_model(&artifact, RunId::from_bytes([0x48; 16])).expect("valid run");
     let replay = replay_with_artifact(&log, &artifact).expect("valid replay");
 
     assert_eq!(

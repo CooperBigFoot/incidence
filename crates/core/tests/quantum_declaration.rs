@@ -88,3 +88,23 @@ fn misaligned_initial_stock_identifies_full_boundary_context() {
     assert!(diagnostic.contains("1.1"), "{diagnostic}");
     assert!(diagnostic.contains("0.25"), "{diagnostic}");
 }
+
+#[test]
+fn ambiguous_initial_stock_projection_is_refused() {
+    const COLLIDING_COUNT: u64 = 8_925_151_700_786_600;
+    let mut document = hydrology::fixture();
+    document.units[0].quantum = 0.001;
+    for stock in &mut document.initial_stocks {
+        stock.amounts[0].amount = 0.0;
+    }
+    document.initial_stocks[0].amounts[0].amount = (COLLIDING_COUNT as f64) * 0.001;
+
+    let error = document
+        .artifact()
+        .expect_err("a value shared by two quantum counts must not enter conserved state");
+    let diagnostic = error.to_string();
+
+    assert!(diagnostic.contains("ambiguous"), "{diagnostic}");
+    assert!(diagnostic.contains("water"), "{diagnostic}");
+    assert!(diagnostic.contains("0.001"), "{diagnostic}");
+}
