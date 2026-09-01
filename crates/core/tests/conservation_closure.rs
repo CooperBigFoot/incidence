@@ -3,7 +3,8 @@ mod criterion_suite;
 
 use incidence_core::identity::SubstanceId;
 use incidence_core::ledger::{
-    AuthoritativeLog, QuantumCount, RunId, Transfer, incidence_columns_close, replay_with_artifact,
+    AuthoritativeLog, QuantumAmount, QuantumCount, RunId, Transfer, incidence_columns_close,
+    replay_with_artifact,
 };
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::presence::ValueState;
@@ -14,7 +15,7 @@ use incidence_core::temporal::TimestepIndex;
 fn finite_and_boundary_accounts_close_exactly() {
     let artifact = criterion_suite::fixture(false, 10.0);
     let water = SubstanceId::parse("water").expect("valid substance");
-    let amount = || {
+    let _amount = || {
         SparseSubstanceVector::new(
             artifact.registry(),
             [(
@@ -30,10 +31,14 @@ fn finite_and_boundary_accounts_close_exactly() {
             TimestepIndex::new(0),
             criterion_suite::endpoint(&artifact, "store"),
             criterion_suite::endpoint(&artifact, "route"),
-            amount(),
+            artifact.registry(),
             [(
                 water.clone(),
-                QuantumCount::try_from(3000000).expect("count"),
+                QuantumAmount::new(
+                    artifact.quantum(&water).expect("quantum"),
+                    QuantumCount::try_from(3000000).expect("count"),
+                )
+                .expect("projection"),
             )],
         )
         .expect("count-bound transfer"),
@@ -44,10 +49,14 @@ fn finite_and_boundary_accounts_close_exactly() {
             TimestepIndex::new(1),
             criterion_suite::endpoint(&artifact, "route"),
             criterion_suite::endpoint(&artifact, "outside_out"),
-            amount(),
+            artifact.registry(),
             [(
                 water.clone(),
-                QuantumCount::try_from(3000000).expect("count"),
+                QuantumAmount::new(
+                    artifact.quantum(&water).expect("quantum"),
+                    QuantumCount::try_from(3000000).expect("count"),
+                )
+                .expect("projection"),
             )],
         )
         .expect("count-bound transfer"),

@@ -10,13 +10,12 @@ use std::collections::BTreeMap;
 use crate::endpoints::FiniteCompartment;
 use crate::identity::{CompartmentId, SubstanceId};
 use crate::ledger::{
-    AuthoritativeLog, LogError, QuantumCount, ReplayError, Transfer, TransferEndpoint,
-    TransferError, replay_with_artifact,
+    AuthoritativeLog, LogError, QuantumAmount, QuantumCount, ReplayError, Transfer,
+    TransferEndpoint, TransferError, replay_with_artifact,
 };
 use crate::model_artifact::ModelArtifact;
 use crate::non_negative_amount::NonNegativeAmount;
 use crate::presence::ValueState;
-use crate::sparse_substance_vector::{SparseSubstanceVector, SparseSubstanceVectorError};
 use crate::temporal::TimestepIndex;
 use crate::topology::TopologyEndpoint;
 
@@ -268,22 +267,20 @@ pub fn commit_disposition(
             };
             allocation_count += u128::from(count.value());
             if count.value() != 0 {
-                let amounts = SparseSubstanceVector::new(
-                    artifact.registry(),
-                    [(substance.clone(), allocation.amount)],
-                )
-                .map_err(|source| TransactionError::TransferAmounts {
-                    compartment: compartment.clone(),
-                    timestep,
-                    source,
+                let quantum_amount = QuantumAmount::new(quantum, count).map_err(|source| {
+                    TransactionError::Transfer {
+                        compartment: compartment.clone(),
+                        timestep,
+                        source,
+                    }
                 })?;
                 transfers.push(
                     Transfer::new(
                         timestep,
                         disposition.source.clone(),
                         allocation.target.clone(),
-                        amounts,
-                        [(substance.clone(), count)],
+                        artifact.registry(),
+                        [(substance.clone(), quantum_amount)],
                     )
                     .map_err(|source| TransactionError::Transfer {
                         compartment: compartment.clone(),
@@ -556,15 +553,6 @@ pub enum TransactionError {
         timestep: TimestepIndex,
         declared_bits: u64,
         actual_bits: u64,
-    },
-    /// Fires when generated transfer amounts cannot be represented under the artifact registry.
-    #[error(
-        "cannot construct transfer amounts for compartment `{compartment}` at timestep {timestep:?}: {source}"
-    )]
-    TransferAmounts {
-        compartment: CompartmentId,
-        timestep: TimestepIndex,
-        source: SparseSubstanceVectorError,
     },
     /// Fires when projected transfer amounts cannot bind to authoritative counts.
     #[error(

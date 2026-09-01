@@ -4,7 +4,8 @@ use incidence_core::endpoints::{BoundaryAccount, FiniteCompartment};
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{
-    AuthoritativeLog, QuantumCount, ReplayError, RunId, Transfer, replay_with_artifact,
+    AuthoritativeLog, QuantumAmount, QuantumCount, ReplayError, RunId, Transfer,
+    replay_with_artifact,
 };
 use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::non_negative_amount::NonNegativeAmount;
@@ -64,10 +65,10 @@ fn replay_refuses_an_endpoint_count_above_the_exact_ceiling() {
         )])
         .build()
         .expect("valid artifact at the exact ceiling");
-    let amounts = SparseSubstanceVector::new(
+    let _amounts = SparseSubstanceVector::new(
         artifact.registry(),
         [(
-            water,
+            water.clone(),
             NonNegativeAmount::try_from(1.0).expect("valid amount"),
         )],
     )
@@ -86,10 +87,14 @@ fn replay_refuses_an_endpoint_count_above_the_exact_ceiling() {
                 .endpoint(&store)
                 .expect("finite endpoint")
                 .clone(),
-            amounts,
+            artifact.registry(),
             [(
                 SubstanceId::parse("water").expect("water"),
-                QuantumCount::try_from(1).expect("count"),
+                QuantumAmount::new(
+                    artifact.quantum(&water).expect("quantum"),
+                    QuantumCount::try_from(1).expect("count"),
+                )
+                .expect("projection"),
             )],
         )
         .expect("count-bound transfer"),

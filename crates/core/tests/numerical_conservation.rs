@@ -4,7 +4,8 @@ use incidence_core::endpoints::FiniteCompartment;
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{
-    AuthoritativeLog, QuantumCount, ReplayError, RunId, Transfer, replay_with_artifact,
+    AuthoritativeLog, QuantumAmount, QuantumCount, ReplayError, RunId, Transfer,
+    replay_with_artifact,
 };
 use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::non_negative_amount::NonNegativeAmount;
@@ -76,7 +77,7 @@ fn replay_rejects_a_transfer_smaller_than_one_quantum() {
         )])
         .build()
         .expect("valid artifact");
-    let amount = SparseSubstanceVector::new(
+    let _amount = SparseSubstanceVector::new(
         artifact.registry(),
         [(
             water,
@@ -98,10 +99,14 @@ fn replay_rejects_a_transfer_smaller_than_one_quantum() {
                 .endpoint(&target)
                 .expect("target endpoint")
                 .clone(),
-            amount,
+            artifact.registry(),
             [(
                 SubstanceId::parse("water").expect("water"),
-                QuantumCount::try_from(0).expect("count"),
+                QuantumAmount::new(
+                    Quantum::try_from(1.0).expect("alternate quantum"),
+                    QuantumCount::try_from(1).expect("count"),
+                )
+                .expect("projection"),
             )],
         )
         .expect("count-bound transfer"),

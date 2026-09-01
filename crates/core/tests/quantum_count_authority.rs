@@ -6,7 +6,7 @@ use incidence_core::execution_bindings::{ExecutionBindings, TransferBranchBindin
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{
-    AuthoritativeLog, QuantumCount, RunId, Transfer, replay_with_artifact,
+    AuthoritativeLog, QuantumAmount, QuantumCount, RunId, Transfer, replay_with_artifact,
 };
 use incidence_core::model_artifact::{
     ModelArtifact, Quantum, RuleDefinition, SubstanceUnit, UnitId,
@@ -73,7 +73,7 @@ fn log_for_count(
     count: u64,
 ) -> AuthoritativeLog {
     let projected = (count as f64) * 0.001;
-    let amounts = SparseSubstanceVector::new(
+    let _amounts = SparseSubstanceVector::new(
         artifact.registry(),
         [(
             water.clone(),
@@ -89,10 +89,14 @@ fn log_for_count(
             .expect("outside")
             .clone(),
         artifact.topology().endpoint(store).expect("store").clone(),
-        amounts,
+        artifact.registry(),
         [(
             water.clone(),
-            QuantumCount::try_from(count).expect("count below ceiling"),
+            QuantumAmount::new(
+                artifact.quantum(water).expect("quantum"),
+                QuantumCount::try_from(count).expect("count below ceiling"),
+            )
+            .expect("projection"),
         )],
     )
     .expect("count-bound transfer");
@@ -119,6 +123,44 @@ fn colliding_public_values_keep_distinct_authoritative_transfer_counts() {
         replay.final_state().finite_quantum_count(&store, &water),
         Some(COLLIDING_COUNT)
     );
+}
+
+#[test]
+fn zero_count_transfer_entries_canonicalize_to_absence() {
+    let (artifact, outside, store, water) = fixture();
+    let zero = Transfer::new(
+        TimestepIndex::new(0),
+        artifact
+            .topology()
+            .endpoint(&outside)
+            .expect("outside")
+            .clone(),
+        artifact.topology().endpoint(&store).expect("store").clone(),
+        artifact.registry(),
+        [(
+            water.clone(),
+            QuantumAmount::new(
+                artifact.quantum(&water).expect("quantum"),
+                QuantumCount::try_from(0).expect("zero count"),
+            )
+            .expect("zero projection"),
+        )],
+    )
+    .expect("zero transfer");
+    let empty = Transfer::new(
+        TimestepIndex::new(0),
+        artifact
+            .topology()
+            .endpoint(&outside)
+            .expect("outside")
+            .clone(),
+        artifact.topology().endpoint(&store).expect("store").clone(),
+        artifact.registry(),
+        [],
+    )
+    .expect("empty transfer");
+
+    assert_eq!(zero, empty);
 }
 
 #[test]

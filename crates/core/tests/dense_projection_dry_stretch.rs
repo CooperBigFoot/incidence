@@ -4,7 +4,7 @@ use incidence_core::dense_projection::{DenseProjectionError, DenseTransferProjec
 use incidence_core::endpoints::{BoundaryAccount, FiniteCompartment};
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
-use incidence_core::ledger::{AuthoritativeLog, QuantumCount, RunId, Transfer};
+use incidence_core::ledger::{AuthoritativeLog, QuantumAmount, QuantumCount, RunId, Transfer};
 use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::presence::ValueState;
@@ -77,7 +77,7 @@ fn endpoint(artifact: &ModelArtifact, id: &str) -> TopologyEndpoint {
 fn dense_projection_preserves_a_forty_step_dry_stretch() {
     let artifact = fixture();
     let water = SubstanceId::parse("water").expect("fixture substance");
-    let amount = SparseSubstanceVector::new(
+    let _amount = SparseSubstanceVector::new(
         artifact.registry(),
         [(
             water.clone(),
@@ -92,10 +92,14 @@ fn dense_projection_preserves_a_forty_step_dry_stretch() {
                 TimestepIndex::new(timestep),
                 endpoint(&artifact, "store"),
                 endpoint(&artifact, "downstream"),
-                amount.clone(),
+                artifact.registry(),
                 [(
                     water.clone(),
-                    QuantumCount::try_from(1000000).expect("count"),
+                    QuantumAmount::new(
+                        artifact.quantum(&water).expect("quantum"),
+                        QuantumCount::try_from(1000000).expect("count"),
+                    )
+                    .expect("projection"),
                 )],
             )
             .expect("count-bound transfer"),

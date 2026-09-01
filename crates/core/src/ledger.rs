@@ -3,7 +3,7 @@
 //! Genesis supplies the fold seed, each Transfer contributes one incidence column per
 //! substance, and an optional RunCompleted record proves that the declared horizon was reached.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use crate::endpoints::{BoundaryAccount, FiniteCompartment};
 use crate::identity::{CompartmentId, SubstanceId};
 use crate::initial_stocks::InitialStocks;
 use crate::model_artifact::{
-    MAX_EXACT_WHOLE_MULTIPLE_COUNT, ModelArtifact, ModelArtifactArchive, ModelDigest,
+    MAX_EXACT_WHOLE_MULTIPLE_COUNT, ModelArtifact, ModelArtifactArchive, ModelDigest, Quantum,
 };
 use crate::non_negative_amount::NonNegativeAmount;
 use crate::numerical_semantics::NumericalSemanticsVersion;
@@ -120,23 +120,6 @@ impl Genesis {
             initial_quantum_counts,
         }
     }
-    /// Constructs a decoded Genesis record. Compatibility is checked during replay.
-    #[must_use]
-    pub fn new(
-        run_id: RunId,
-        model_digest: ModelDigest,
-        numerical_semantics: NumericalSemanticsVersion,
-        initial_stocks: InitialStocks,
-        initial_quantum_counts: impl IntoIterator<Item = ((CompartmentId, SubstanceId), QuantumCount)>,
-    ) -> Self {
-        Self {
-            run_id,
-            model_digest,
-            numerical_semantics,
-            initial_stocks,
-            initial_quantum_counts: initial_quantum_counts.into_iter().collect(),
-        }
-    }
     #[must_use]
     pub const fn run_id(&self) -> RunId {
         self.run_id
@@ -184,6 +167,46 @@ impl TryFrom<u64> for QuantumCount {
     }
 }
 
+/// One authoritative quantum count paired with its deterministic public projection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QuantumAmount {
+    count: QuantumCount,
+    amount: NonNegativeAmount,
+}
+
+impl QuantumAmount {
+    /// Projects one authoritative count under its declared quantum.
+    ///
+    /// # Errors
+    /// Returns [`TransferError::InvalidProjection`] if the count cannot become a finite amount.
+    pub fn new(quantum: Quantum, count: QuantumCount) -> Result<Self, TransferError> {
+        let projected =
+            quantum
+                .to_value(count.value())
+                .ok_or(TransferError::InvalidProjection {
+                    count: count.value(),
+                    quantum_bits: quantum.value().to_bits(),
+                })?;
+        let amount = NonNegativeAmount::try_from(projected).map_err(|_| {
+            TransferError::InvalidProjection {
+                count: count.value(),
+                quantum_bits: quantum.value().to_bits(),
+            }
+        })?;
+        Ok(Self { count, amount })
+    }
+
+    #[must_use]
+    pub const fn count(self) -> QuantumCount {
+        self.count
+    }
+
+    #[must_use]
+    pub const fn amount(self) -> NonNegativeAmount {
+        self.amount
+    }
+}
+
 /// An atomic movement of registered extensive amounts between typed endpoints.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transfer {
@@ -194,39 +217,35 @@ pub struct Transfer {
     quantum_counts: BTreeMap<SubstanceId, QuantumCount>,
 }
 impl Transfer {
-    /// Constructs a transfer whose projected amounts and authoritative counts name identical
-    /// substance coordinates. Replay checks each projection against the artifact quantum.
+    /// Constructs a transfer from internally consistent count/projection pairs.
     ///
     /// # Errors
-    /// Returns [`TransferError`] for duplicate, missing, or extraneous count coordinates.
+    /// Returns [`TransferError`] for duplicate or unregistered substance coordinates.
     pub fn new(
         timestep: TimestepIndex,
         source: impl Into<TransferEndpoint>,
         target: impl Into<TransferEndpoint>,
-        amounts: SparseSubstanceVector,
-        quantum_counts: impl IntoIterator<Item = (SubstanceId, QuantumCount)>,
+        registry: &SubstanceRegistry,
+        entries: impl IntoIterator<Item = (SubstanceId, QuantumAmount)>,
     ) -> Result<Self, TransferError> {
+        let mut seen = BTreeSet::new();
         let mut counts = BTreeMap::new();
-        for (substance, count) in quantum_counts {
-            if counts.insert(substance.clone(), count).is_some() {
+        let mut projected = Vec::new();
+        for (substance, quantum_amount) in entries {
+            if !registry.contains(&substance) {
+                return Err(TransferError::UnregisteredSubstance { substance });
+            }
+            if !seen.insert(substance.clone()) {
                 return Err(TransferError::DuplicateCount { substance });
             }
-        }
-        for (substance, _) in amounts.iter() {
-            if !counts.contains_key(substance) {
-                return Err(TransferError::MissingCount {
-                    substance: substance.clone(),
-                });
+            if quantum_amount.count().value() == 0 {
+                continue;
             }
+            counts.insert(substance.clone(), quantum_amount.count());
+            projected.push((substance, quantum_amount.amount()));
         }
-        if let Some(substance) = counts
-            .keys()
-            .find(|substance| !matches!(amounts.amount(substance), ValueState::Present(_)))
-        {
-            return Err(TransferError::ExtraneousCount {
-                substance: substance.clone(),
-            });
-        }
+        let amounts = SparseSubstanceVector::new(registry, projected)
+            .map_err(|_| TransferError::InvalidAmountVector)?;
         Ok(Self {
             timestep,
             source: source.into(),
@@ -267,12 +286,15 @@ pub enum TransferError {
     /// Fires when the count entries repeat a substance coordinate.
     #[error("transfer repeats the quantum count for substance `{substance}`")]
     DuplicateCount { substance: SubstanceId },
-    /// Fires when a projected amount has no authoritative count.
-    #[error("transfer amount for substance `{substance}` has no authoritative quantum count")]
-    MissingCount { substance: SubstanceId },
-    /// Fires when a count has no projected amount.
-    #[error("transfer quantum count for substance `{substance}` has no projected amount")]
-    ExtraneousCount { substance: SubstanceId },
+    /// Fires when count projection cannot produce a finite non-negative amount.
+    #[error("quantum count {count} cannot be projected under quantum bits {quantum_bits:#018x}")]
+    InvalidProjection { count: u64, quantum_bits: u64 },
+    /// Fires when an entry names a substance absent from the supplied registry.
+    #[error("transfer count names unregistered substance `{substance}`")]
+    UnregisteredSubstance { substance: SubstanceId },
+    /// Fires when the derived sparse amount vector rejects internally validated entries.
+    #[error("transfer count projection cannot form a sparse amount vector")]
+    InvalidAmountVector,
 }
 
 /// SHA-256 identity of Genesis and all Transfers preceding a completion seal.

@@ -23,7 +23,7 @@ use crate::partition_expression::PartitionExprView;
 use crate::presence::ValueState;
 use crate::projection::{
     AuthoritativeFactSelector, ProjectionSource, ProjectionSpecView, ProjectionValue,
-    RecurrenceInputSource,
+    ProjectionValueKind, RecurrenceInputSource,
 };
 use crate::rule_expression::{RuleExpr, RuleExprView};
 use crate::rule_reference::{
@@ -33,21 +33,41 @@ use crate::temporal::TimestepIndex;
 use crate::topology::TopologyEndpoint;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct AuthoritativeCount {
+    substance_index: usize,
+    quantum_bits: u64,
+    count: QuantumCount,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Value {
     Scalar(f64),
+    Extensive {
+        value: f64,
+        authoritative_count: Option<AuthoritativeCount>,
+    },
     Truth(bool),
 }
 impl Value {
     fn scalar(self) -> Result<f64, ExecutionError> {
         match self {
-            Self::Scalar(v) => Ok(v),
+            Self::Scalar(v) | Self::Extensive { value: v, .. } => Ok(v),
             Self::Truth(_) => Err(ExecutionError::ValueKind),
+        }
+    }
+    fn authoritative_count(self) -> Option<AuthoritativeCount> {
+        match self {
+            Self::Extensive {
+                authoritative_count,
+                ..
+            } => authoritative_count,
+            Self::Scalar(_) | Self::Truth(_) => None,
         }
     }
     fn truth(self) -> Result<bool, ExecutionError> {
         match self {
             Self::Truth(v) => Ok(v),
-            Self::Scalar(_) => Err(ExecutionError::ValueKind),
+            Self::Scalar(_) | Self::Extensive { .. } => Err(ExecutionError::ValueKind),
         }
     }
 }
@@ -128,6 +148,12 @@ pub enum ExecutionError {
     /// Fires when a projection cannot represent its declared typed value.
     #[error("projection `{projection}` has an incompatible state value")]
     ProjectionKind { projection: ProjectionId },
+    /// Fires when exact extensive projection counts exceed the declared count ceiling.
+    #[error("projection `{projection}` exact count exceeds the ceiling at timestep {timestep:?}")]
+    ProjectionCountOverflow {
+        projection: ProjectionId,
+        timestep: TimestepIndex,
+    },
     /// Fires when a bare rule input is bound to a table (tables require an explicit lookup expression).
     #[error("rule input `{input}` is bound to table `{table}` without a lookup abscissa")]
     TableInputNeedsAbscissa { input: InputId, table: TableId },
@@ -163,10 +189,10 @@ impl<'a> RuleInterpreter<'a> {
     }
     /// Evaluates the rule's scalar expression under the artifact's selected semantics.
     pub fn evaluate(&self) -> Result<f64, ExecutionError> {
-        self.evaluate_expression(self.rule.expression())
+        self.evaluate_value(self.rule.expression())?.scalar()
     }
-    fn evaluate_expression(&self, expression: &RuleExpr) -> Result<f64, ExecutionError> {
-        self.eval(expression, None, None)?.scalar()
+    fn evaluate_value(&self, expression: &RuleExpr) -> Result<Value, ExecutionError> {
+        self.eval(expression, None, None)
     }
     fn missing(&self, kind: &'static str, identity: String) -> ExecutionError {
         ExecutionError::MissingValue {
@@ -341,23 +367,65 @@ impl<'a> RuleInterpreter<'a> {
                     .saturating_sub(observed_in_window);
                 let missing = rolling.window().saturating_sub(observed_in_window as usize);
                 let mut total = 0.0;
+                let mut exact_count: Option<AuthoritativeCount> = None;
+                let mut all_authoritative = true;
+                let mut add_value = |next: Value| -> Result<(), ExecutionError> {
+                    total = rolling
+                        .numerical_semantics_version()
+                        .add(total, next.scalar()?)?;
+                    exact_count = match (exact_count, next.authoritative_count()) {
+                        (None, Some(next)) if all_authoritative => Some(next),
+                        (Some(accumulated), Some(next))
+                            if accumulated.substance_index == next.substance_index
+                                && accumulated.quantum_bits == next.quantum_bits =>
+                        {
+                            let sum = accumulated
+                                .count
+                                .value()
+                                .checked_add(next.count.value())
+                                .ok_or_else(|| ExecutionError::ProjectionCountOverflow {
+                                    projection: id.clone(),
+                                    timestep: t,
+                                })?;
+                            let count = QuantumCount::try_from(sum).map_err(|_| {
+                                ExecutionError::ProjectionCountOverflow {
+                                    projection: id.clone(),
+                                    timestep: t,
+                                }
+                            })?;
+                            Some(AuthoritativeCount {
+                                substance_index: accumulated.substance_index,
+                                quantum_bits: accumulated.quantum_bits,
+                                count,
+                            })
+                        }
+                        _ => {
+                            all_authoritative = false;
+                            None
+                        }
+                    };
+                    Ok(())
+                };
                 for value in initial
                     .values()
                     .iter()
                     .skip(initial.values().len() - missing)
                 {
-                    total = rolling
-                        .numerical_semantics_version()
-                        .add(total, projection_value(*value, id)?.scalar()?)?;
+                    add_value(projection_value(*value, id)?)?;
                 }
                 for ordinal in start..=t.value() {
-                    total = rolling.numerical_semantics_version().add(
-                        total,
-                        self.projection_source(rolling.source(), TimestepIndex::new(ordinal))?
-                            .scalar()?,
+                    add_value(
+                        self.projection_source(rolling.source(), TimestepIndex::new(ordinal))?,
                     )?;
                 }
-                Ok(Value::Scalar(total))
+                if rolling.value_kind() == ProjectionValueKind::Extensive {
+                    Ok(Value::Extensive {
+                        value: total,
+                        authoritative_count: all_authoritative.then_some(exact_count).flatten(),
+                    })
+                } else {
+                    Ok(Value::Scalar(total))
+                }
             }
             ProjectionSpecView::FiniteRecurrence(rec) => {
                 let mut state = initial
@@ -376,7 +444,7 @@ impl<'a> RuleInterpreter<'a> {
                     for b in rec.inputs() {
                         let value = match b.input_source() {
                             RecurrenceInputSource::AuthoritativeFact(sel) => {
-                                Value::Scalar(self.fact(sel, step)?)
+                                self.fact(sel, step)?
                             }
                             RecurrenceInputSource::PreviousState { index, .. } => state[*index],
                         };
@@ -404,7 +472,7 @@ impl<'a> RuleInterpreter<'a> {
         t: TimestepIndex,
     ) -> Result<Value, ExecutionError> {
         match source {
-            ProjectionSource::AuthoritativeFact(sel) => Ok(Value::Scalar(self.fact(sel, t)?)),
+            ProjectionSource::AuthoritativeFact(sel) => self.fact(sel, t),
             ProjectionSource::Projection(r) => self.projection_at(r.id(), t),
         }
     }
@@ -412,33 +480,85 @@ impl<'a> RuleInterpreter<'a> {
         &self,
         selector: &AuthoritativeFactSelector,
         t: TimestepIndex,
-    ) -> Result<f64, ExecutionError> {
-        let s = self.artifact.versions().numerical_semantics();
-        let mut total = 0.0;
+    ) -> Result<Value, ExecutionError> {
+        let quantum = self.artifact.quantum(selector.substance()).ok_or_else(|| {
+            self.missing(
+                "authoritative fact quantum",
+                selector.substance().as_str().to_owned(),
+            )
+        })?;
+        let mut total_count = 0_u128;
         for transfer in self
             .log
             .transfers()
             .iter()
             .filter(|x| x.timestep() == t && selector_matches(selector, x))
         {
-            let a = match transfer.amounts().amount(selector.substance()) {
-                ValueState::Present(v) => v.value(),
-                _ => {
-                    return Err(self.missing(
+            let count = transfer
+                .quantum_count(selector.substance())
+                .ok_or_else(|| {
+                    self.missing(
                         "authoritative fact substance",
                         selector.substance().as_str().to_owned(),
-                    ));
-                }
-            };
-            total = s.add(total, a)?;
+                    )
+                })?;
+            total_count = total_count
+                .checked_add(u128::from(count.value()))
+                .ok_or_else(|| {
+                    self.missing(
+                        "authoritative fact count",
+                        selector.substance().as_str().to_owned(),
+                    )
+                })?;
         }
-        Ok(total)
+        let count = u64::try_from(total_count).map_err(|_| {
+            self.missing(
+                "authoritative fact count",
+                selector.substance().as_str().to_owned(),
+            )
+        })?;
+        let count = QuantumCount::try_from(count).map_err(|_| {
+            self.missing(
+                "authoritative fact count",
+                selector.substance().as_str().to_owned(),
+            )
+        })?;
+        let substance_index = self
+            .artifact
+            .registry()
+            .iter()
+            .position(|substance| substance == selector.substance())
+            .ok_or_else(|| {
+                self.missing(
+                    "authoritative fact substance",
+                    selector.substance().as_str().to_owned(),
+                )
+            })?;
+        let authoritative_count = AuthoritativeCount {
+            substance_index,
+            quantum_bits: quantum.value().to_bits(),
+            count,
+        };
+        let value = quantum.to_value(count.value()).ok_or_else(|| {
+            self.missing(
+                "authoritative fact projection",
+                selector.substance().as_str().to_owned(),
+            )
+        })?;
+        Ok(Value::Extensive {
+            value,
+            authoritative_count: Some(authoritative_count),
+        })
     }
 }
 
 fn projection_value(value: ProjectionValue, _id: &ProjectionId) -> Result<Value, ExecutionError> {
     match value {
-        ProjectionValue::Extensive(v) | ProjectionValue::Scalar(v) => Ok(Value::Scalar(v.value())),
+        ProjectionValue::Extensive(v) => Ok(Value::Extensive {
+            value: v.value(),
+            authoritative_count: None,
+        }),
+        ProjectionValue::Scalar(v) => Ok(Value::Scalar(v.value())),
         ProjectionValue::Truth(v) => Ok(Value::Truth(v)),
     }
 }
@@ -654,28 +774,39 @@ fn evaluate_partition(
     let mut transfer_count = 0_u128;
     let mut add_branch = |branch: &TransferBranchId,
                           value: f64,
-                          authoritative_count: Option<u64>|
+                          authoritative_count: Option<AuthoritativeCount>|
      -> Result<(), ExecutionError> {
         let raw = amount(rule, timestep, value)?;
-        let count = if let Some(count) = authoritative_count {
+        let rule_substance_index = artifact
+            .registry()
+            .iter()
+            .position(|substance| substance == rule.substance());
+        let compatible_count = authoritative_count
+            .filter(|count| {
+                Some(count.substance_index) == rule_substance_index
+                    && count.quantum_bits == quantum.value().to_bits()
+            })
+            .map(|count| count.count);
+        let authoritative = if let Some(count) = compatible_count {
             count
         } else {
-            quantum
-                .floor_count(raw.value())
-                .ok_or_else(|| ExecutionError::InvalidAmount {
-                    compartment: rule.compartment().clone(),
-                    substance: rule.substance().clone(),
-                    timestep,
-                    bits: value.to_bits(),
-                })?
-        };
-        let authoritative =
+            let count =
+                quantum
+                    .floor_count(raw.value())
+                    .ok_or_else(|| ExecutionError::InvalidAmount {
+                        compartment: rule.compartment().clone(),
+                        substance: rule.substance().clone(),
+                        timestep,
+                        bits: value.to_bits(),
+                    })?;
             QuantumCount::try_from(count).map_err(|_| ExecutionError::InvalidAmount {
                 compartment: rule.compartment().clone(),
                 substance: rule.substance().clone(),
                 timestep,
                 bits: value.to_bits(),
-            })?;
+            })?
+        };
+        let count = authoritative.value();
         let quantized_value =
             quantum
                 .to_value(count)
@@ -717,10 +848,8 @@ fn evaluate_partition(
             let _evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
         }
         PartitionExprView::ReleaseAll { branch } => {
-            let evaluated_amount = interpreter.evaluate()?;
-            let authoritative_count = (evaluated_amount.to_bits() == available.value().to_bits())
-                .then_some(available_count);
-            add_branch(branch, evaluated_amount, authoritative_count)?;
+            let evaluated = interpreter.evaluate_value(rule.expression())?;
+            add_branch(branch, evaluated.scalar()?, evaluated.authoritative_count())?;
         }
         PartitionExprView::ConstantFractionTransfer { branch, fraction } => {
             let evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
@@ -757,8 +886,12 @@ fn evaluate_partition(
         }
         PartitionExprView::ExpressionPartition { branches } => {
             for branch in branches {
-                let value = interpreter.evaluate_expression(branch.expression())?;
-                add_branch(branch.branch(), value, None)?;
+                let evaluated = interpreter.evaluate_value(branch.expression())?;
+                add_branch(
+                    branch.branch(),
+                    evaluated.scalar()?,
+                    evaluated.authoritative_count(),
+                )?;
             }
         }
     }

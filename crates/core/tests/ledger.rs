@@ -4,8 +4,8 @@ use incidence_core::endpoints::{BoundaryAccount, FiniteCompartment};
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{
-    AuthoritativeLog, CompletenessReader, Genesis, QuantumCount, Record, ReplayError, RunId,
-    RunStatus, Transfer,
+    AuthoritativeLog, CompletenessReader, Genesis, QuantumAmount, QuantumCount, Record,
+    ReplayError, RunId, RunStatus, Transfer,
 };
 use incidence_core::model_artifact::{
     ModelArtifact, ModelArtifactArchive, Quantum, SubstanceUnit, UnitId,
@@ -99,7 +99,7 @@ fn replay_is_dense_exact_and_seal_distinguishes_prefix() {
     let artifact = fixture(false, 10.0);
     let registry = artifact.registry();
     let water = SubstanceId::parse("water").expect("water");
-    let amount = SparseSubstanceVector::new(
+    let _amount = SparseSubstanceVector::new(
         registry,
         [(
             water.clone(),
@@ -113,10 +113,14 @@ fn replay_is_dense_exact_and_seal_distinguishes_prefix() {
             TimestepIndex::new(1),
             endpoint(&artifact, "store"),
             endpoint(&artifact, "route"),
-            amount,
+            artifact.registry(),
             [(
                 water.clone(),
-                QuantumCount::try_from(3000000).expect("count"),
+                QuantumAmount::new(
+                    artifact.quantum(&water).expect("quantum"),
+                    QuantumCount::try_from(3000000).expect("count"),
+                )
+                .expect("projection"),
             )],
         )
         .expect("count-bound transfer"),
@@ -174,7 +178,7 @@ fn unmodelled_is_not_zero_and_digest_mismatch_is_rejected() {
 #[test]
 fn zero_transfer_is_authoritative_and_seal_authenticates_it() {
     let artifact = fixture(false, 10.0);
-    let empty = SparseSubstanceVector::new(artifact.registry(), []).expect("empty");
+    let _empty = SparseSubstanceVector::new(artifact.registry(), []).expect("empty");
     let mut without = AuthoritativeLog::for_run(RunId::from_bytes([7; 16]), &artifact);
     let first = without.digest();
     without
@@ -183,7 +187,7 @@ fn zero_transfer_is_authoritative_and_seal_authenticates_it() {
                 TimestepIndex::new(0),
                 endpoint(&artifact, "store"),
                 endpoint(&artifact, "route"),
-                empty,
+                artifact.registry(),
                 [],
             )
             .expect("count-bound transfer"),
