@@ -3,7 +3,9 @@
 use incidence_core::endpoints::FiniteCompartment;
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
-use incidence_core::ledger::{AuthoritativeLog, RunId, Transfer, replay_with_artifact};
+use incidence_core::ledger::{
+    AuthoritativeLog, ReplayError, RunId, Transfer, replay_with_artifact,
+};
 use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::projection::ProjectionSet;
@@ -19,7 +21,7 @@ fn id(value: &str) -> CompartmentId {
 }
 
 #[test]
-fn replay_rejects_a_transfer_whose_binary64_updates_do_not_close() {
+fn replay_rejects_a_transfer_smaller_than_one_quantum() {
     let source = id("a_source");
     let target = id("b_target");
     let topology = Topology::new(
@@ -44,7 +46,7 @@ fn replay_rejects_a_transfer_whose_binary64_updates_do_not_close() {
         &registry,
         [(
             water.clone(),
-            NonNegativeAmount::try_from(1.0).expect("valid amount"),
+            NonNegativeAmount::try_from(10.0).expect("valid amount"),
         )],
     )
     .expect("valid target stock");
@@ -99,5 +101,8 @@ fn replay_rejects_a_transfer_whose_binary64_updates_do_not_close() {
     ))
     .expect("structurally valid transfer");
 
-    assert!(replay_with_artifact(&log, &artifact).is_err());
+    assert!(matches!(
+        replay_with_artifact(&log, &artifact),
+        Err(ReplayError::NonQuantumTransfer { .. })
+    ));
 }
