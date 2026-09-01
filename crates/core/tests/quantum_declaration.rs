@@ -24,7 +24,7 @@ fn quantum_is_required_in_a_unit_declaration() {
 #[test]
 fn uncountable_total_is_refused() {
     let mut document = hydrology::fixture();
-    document.units[0].quantum = 1.0e-15;
+    document.units[0].quantum = 100.0 / ((1_u64 << 51) as f64);
 
     let error = document
         .artifact()

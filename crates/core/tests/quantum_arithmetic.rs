@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used)]
 
+use incidence_core::dense_projection::DenseTransferProjection;
 use incidence_core::endpoints::FiniteCompartment;
 use incidence_core::execution::execute_model;
 use incidence_core::execution_bindings::{ExecutionBindings, TransferBranchBinding};
@@ -13,7 +14,7 @@ use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::numerical_semantics::NumericalSemanticsVersion;
 use incidence_core::partition_expression::{ExpressionBranch, PartitionExpr};
 use incidence_core::presence::ValueState;
-use incidence_core::projection::ProjectionSet;
+use incidence_core::projection::{AuthoritativeFactSelector, ProjectionSet};
 use incidence_core::rule_expression::RuleExpr;
 use incidence_core::rule_reference::TransferBranchId;
 use incidence_core::sparse_substance_vector::SparseSubstanceVector;
@@ -37,12 +38,13 @@ fn literal(value: f64) -> RuleExpr {
         .expect("valid literal")
 }
 
-fn artifact(
+fn artifact_with_last_timestep(
     quantum_value: f64,
     source_stock: f64,
     sink_a_stock: f64,
     sink_b_stock: f64,
     branches: [f64; 2],
+    last_timestep: u64,
 ) -> ModelArtifact {
     let source = compartment("source");
     let sink_a = compartment("sink-a");
@@ -115,8 +117,8 @@ fn artifact(
         CalendarOrigin::new(CalendarInstant::from_unix_seconds(0)),
         TimestepDuration::from_seconds(1).expect("valid duration"),
     );
-    let horizon =
-        RunHorizon::new(TimestepIndex::new(0), TimestepIndex::new(0)).expect("valid horizon");
+    let horizon = RunHorizon::new(TimestepIndex::new(0), TimestepIndex::new(last_timestep))
+        .expect("valid horizon");
     ModelArtifact::builder(topology, registry, stocks, calendar, horizon)
         .with_projections(ProjectionSet::new(vec![], vec![]).expect("valid projections"))
         .with_rules(vec![rule])
@@ -130,6 +132,23 @@ fn artifact(
         )])
         .build()
         .expect("valid artifact")
+}
+
+fn artifact(
+    quantum_value: f64,
+    source_stock: f64,
+    sink_a_stock: f64,
+    sink_b_stock: f64,
+    branches: [f64; 2],
+) -> ModelArtifact {
+    artifact_with_last_timestep(
+        quantum_value,
+        source_stock,
+        sink_a_stock,
+        sink_b_stock,
+        branches,
+        0,
+    )
 }
 
 #[test]
@@ -191,4 +210,73 @@ fn conserved_total_is_bit_stable_across_credits() {
     };
 
     assert!(totals.closes_bit_identically());
+}
+
+#[test]
+fn whole_count_residual_is_available_on_the_following_timestep() {
+    let artifact = artifact_with_last_timestep(1.0, 10.0, 0.0, 0.0, [2.9, 3.1], 1);
+    let water = SubstanceId::parse("water").expect("valid substance");
+    let log = execute_model(&artifact, RunId::from_bytes([0x44; 16])).expect("valid run");
+    let replay = replay_with_artifact(&log, &artifact).expect("valid replay");
+
+    assert_eq!(log.transfers().len(), 4);
+    assert_eq!(
+        replay
+            .final_state()
+            .finite_stock(&compartment("source"), &water),
+        ValueState::Present(0.0.try_into().expect("amount"))
+    );
+}
+
+#[test]
+fn sub_quantum_modelled_output_is_present_zero() {
+    let artifact = artifact(1.0, 1.0, 0.0, 0.0, [0.9, 0.0]);
+    let water = SubstanceId::parse("water").expect("valid substance");
+    let log = execute_model(&artifact, RunId::from_bytes([0x45; 16])).expect("valid run");
+    let projection = DenseTransferProjection::from_log_with_artifact(
+        &log,
+        &artifact,
+        AuthoritativeFactSelector::OutgoingTransferAmount {
+            compartment: compartment("source"),
+            substance: water.clone(),
+        },
+    )
+    .expect("valid projection");
+
+    assert_eq!(
+        projection.value_at(TimestepIndex::new(0)),
+        ValueState::Present(0.0.try_into().expect("amount"))
+    );
+    assert_eq!(
+        projection.value_at(TimestepIndex::new(1)),
+        ValueState::Absent
+    );
+    let sediment = SubstanceId::parse("sediment").expect("valid substance");
+    let not_modelled = DenseTransferProjection::from_log_with_artifact(
+        &log,
+        &artifact,
+        AuthoritativeFactSelector::OutgoingTransferAmount {
+            compartment: compartment("source"),
+            substance: sediment,
+        },
+    )
+    .expect("valid projection");
+    assert_eq!(
+        not_modelled.value_at(TimestepIndex::new(0)),
+        ValueState::NotModelled
+    );
+    assert_eq!(
+        artifact.quantum(&water).expect("declared quantum").value(),
+        1.0
+    );
+}
+
+#[test]
+fn repeated_quantum_execution_has_identical_log_digest() {
+    let artifact = artifact(0.25, 10.0, 0.0, 0.0, [2.9, 3.1]);
+    let run_id = RunId::from_bytes([0x46; 16]);
+    let first = execute_model(&artifact, run_id).expect("first run");
+    let second = execute_model(&artifact, run_id).expect("second run");
+
+    assert_eq!(first.digest(), second.digest());
 }
