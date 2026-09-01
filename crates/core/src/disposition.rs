@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use crate::endpoints::FiniteCompartment;
 use crate::identity::{CompartmentId, SubstanceId};
 use crate::ledger::{
-    AuthoritativeLog, LogError, ReplayError, Transfer, TransferEndpoint, replay_with_artifact,
+    AuthoritativeLog, LogError, QuantumCount, ReplayError, Transfer, TransferEndpoint,
+    TransferError, replay_with_artifact,
 };
 use crate::model_artifact::ModelArtifact;
 use crate::non_negative_amount::NonNegativeAmount;
@@ -24,6 +25,7 @@ use crate::topology::TopologyEndpoint;
 pub struct Allocation {
     target: TransferEndpoint,
     amount: NonNegativeAmount,
+    authoritative_count: Option<QuantumCount>,
 }
 
 impl Allocation {
@@ -32,6 +34,19 @@ impl Allocation {
         Self {
             target: target.into(),
             amount,
+            authoritative_count: None,
+        }
+    }
+
+    pub(crate) fn from_count(
+        target: impl Into<TransferEndpoint>,
+        amount: NonNegativeAmount,
+        authoritative_count: QuantumCount,
+    ) -> Self {
+        Self {
+            target: target.into(),
+            amount,
+            authoritative_count: Some(authoritative_count),
         }
     }
 
@@ -215,17 +230,44 @@ pub fn commit_disposition(
             })?;
         let mut allocation_count = 0_u128;
         for allocation in &entry.allocations {
-            let count = quantum
-                .whole_count(allocation.amount.value())
-                .ok_or_else(|| TransactionError::NonQuantumAllocation {
-                    compartment: compartment.clone(),
-                    substance: substance.clone(),
-                    timestep,
-                    amount_bits: allocation.amount.value().to_bits(),
-                    quantum_bits: quantum.value().to_bits(),
+            let count = if let Some(count) = allocation.authoritative_count {
+                let projected = quantum.to_value(count.value()).ok_or_else(|| {
+                    TransactionError::NonQuantumAllocation {
+                        compartment: compartment.clone(),
+                        substance: substance.clone(),
+                        timestep,
+                        amount_bits: allocation.amount.value().to_bits(),
+                        quantum_bits: quantum.value().to_bits(),
+                    }
                 })?;
-            allocation_count += u128::from(count);
-            if count != 0 {
+                if projected.to_bits() != allocation.amount.value().to_bits() {
+                    return Err(TransactionError::NonQuantumAllocation {
+                        compartment: compartment.clone(),
+                        substance: substance.clone(),
+                        timestep,
+                        amount_bits: allocation.amount.value().to_bits(),
+                        quantum_bits: quantum.value().to_bits(),
+                    });
+                }
+                count
+            } else {
+                let raw = quantum
+                    .whole_count(allocation.amount.value())
+                    .ok_or_else(|| TransactionError::NonQuantumAllocation {
+                        compartment: compartment.clone(),
+                        substance: substance.clone(),
+                        timestep,
+                        amount_bits: allocation.amount.value().to_bits(),
+                        quantum_bits: quantum.value().to_bits(),
+                    })?;
+                QuantumCount::try_from(raw).map_err(|source| TransactionError::Transfer {
+                    compartment: compartment.clone(),
+                    timestep,
+                    source,
+                })?
+            };
+            allocation_count += u128::from(count.value());
+            if count.value() != 0 {
                 let amounts = SparseSubstanceVector::new(
                     artifact.registry(),
                     [(substance.clone(), allocation.amount)],
@@ -235,12 +277,20 @@ pub fn commit_disposition(
                     timestep,
                     source,
                 })?;
-                transfers.push(Transfer::new(
-                    timestep,
-                    disposition.source.clone(),
-                    allocation.target.clone(),
-                    amounts,
-                ));
+                transfers.push(
+                    Transfer::new(
+                        timestep,
+                        disposition.source.clone(),
+                        allocation.target.clone(),
+                        amounts,
+                        [(substance.clone(), count)],
+                    )
+                    .map_err(|source| TransactionError::Transfer {
+                        compartment: compartment.clone(),
+                        timestep,
+                        source,
+                    })?,
+                );
             }
         }
         if allocation_count > u128::from(available_count) {
@@ -515,6 +565,15 @@ pub enum TransactionError {
         compartment: CompartmentId,
         timestep: TimestepIndex,
         source: SparseSubstanceVectorError,
+    },
+    /// Fires when projected transfer amounts cannot bind to authoritative counts.
+    #[error(
+        "cannot construct authoritative transfer for compartment `{compartment}` at timestep {timestep:?}: {source}"
+    )]
+    Transfer {
+        compartment: CompartmentId,
+        timestep: TimestepIndex,
+        source: TransferError,
     },
     /// Fires when the append-only log boundary rejects a generated transfer.
     #[error(transparent)]

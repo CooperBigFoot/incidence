@@ -174,7 +174,40 @@ impl Quantum {
             return None;
         }
         let count = quotient as u64;
-        (self.to_value(count)?.to_bits() == value.to_bits()).then_some(count)
+        if self.to_value(count)?.to_bits() != value.to_bits() {
+            return None;
+        }
+        let collides_below = count
+            .checked_sub(1)
+            .and_then(|neighbor| self.to_value(neighbor))
+            .is_some_and(|neighbor| neighbor.to_bits() == value.to_bits());
+        let collides_above = count
+            .checked_add(1)
+            .filter(|neighbor| *neighbor <= MAX_EXACT_WHOLE_MULTIPLE_COUNT)
+            .and_then(|neighbor| self.to_value(neighbor))
+            .is_some_and(|neighbor| neighbor.to_bits() == value.to_bits());
+        (!collides_below && !collides_above).then_some(count)
+    }
+
+    pub(crate) fn has_ambiguous_whole_count(self, value: f64) -> bool {
+        if !value.is_finite() || value < 0.0 {
+            return false;
+        }
+        let quotient = (value / self.0).round();
+        if !quotient.is_finite() || !(0.0..=MAX_EXACT_WHOLE_MULTIPLES).contains(&quotient) {
+            return false;
+        }
+        let count = quotient as u64;
+        let matches = |candidate| {
+            self.to_value(candidate)
+                .is_some_and(|projected| projected.to_bits() == value.to_bits())
+        };
+        matches(count)
+            && (count.checked_sub(1).is_some_and(matches)
+                || count
+                    .checked_add(1)
+                    .filter(|neighbor| *neighbor <= MAX_EXACT_WHOLE_MULTIPLE_COUNT)
+                    .is_some_and(matches))
     }
 
     /// Converts an authoritative count to its deterministic public binary64 value.
@@ -407,6 +440,7 @@ pub struct ModelArtifact {
     topology: Topology,
     registry: SubstanceRegistry,
     initial_stocks: InitialStocks,
+    initial_quantum_counts: BTreeMap<(CompartmentId, SubstanceId), u64>,
     projections: ProjectionSet,
     calendar: FixedStepCalendar,
     horizon: RunHorizon,
@@ -465,6 +499,25 @@ impl ModelArtifact {
     #[must_use]
     pub fn initial_stocks(&self) -> &InitialStocks {
         &self.initial_stocks
+    }
+    pub(crate) fn initial_quantum_count(
+        &self,
+        compartment: &CompartmentId,
+        substance: &SubstanceId,
+    ) -> Option<u64> {
+        if !matches!(
+            self.topology.endpoint(compartment),
+            Some(TopologyEndpoint::Finite(_))
+        ) || !self.registry.contains(substance)
+        {
+            return None;
+        }
+        Some(
+            self.initial_quantum_counts
+                .get(&(compartment.clone(), substance.clone()))
+                .copied()
+                .unwrap_or(0),
+        )
     }
     #[must_use]
     pub fn projections(&self) -> &ProjectionSet {
@@ -845,6 +898,7 @@ impl ModelArtifactBuilder {
                 return Err(ModelArtifactError::DuplicateUnit { substance });
             }
         }
+        let mut initial_quantum_counts = BTreeMap::new();
         for substance in self.registry.iter() {
             let declaration =
                 units
@@ -861,13 +915,23 @@ impl ModelArtifactBuilder {
                 };
                 let value = amount.value();
                 let count = quantum.whole_count(value).ok_or_else(|| {
-                    ModelArtifactError::MisalignedInitialStock {
-                        compartment: compartment.clone(),
-                        substance: substance.clone(),
-                        value,
-                        quantum: quantum.value(),
+                    if quantum.has_ambiguous_whole_count(value) {
+                        ModelArtifactError::AmbiguousInitialStock {
+                            compartment: compartment.clone(),
+                            substance: substance.clone(),
+                            value,
+                            quantum: quantum.value(),
+                        }
+                    } else {
+                        ModelArtifactError::MisalignedInitialStock {
+                            compartment: compartment.clone(),
+                            substance: substance.clone(),
+                            value,
+                            quantum: quantum.value(),
+                        }
                     }
                 })?;
+                initial_quantum_counts.insert((compartment.clone(), substance.clone()), count);
                 total_count += u128::from(count);
                 diagnostic_total += value;
             }
@@ -883,6 +947,7 @@ impl ModelArtifactBuilder {
             topology: self.topology,
             registry: self.registry,
             initial_stocks: self.initial_stocks,
+            initial_quantum_counts,
             projections,
             calendar: self.calendar,
             horizon: self.horizon,
@@ -1147,6 +1212,16 @@ pub enum ModelArtifactError {
     /// Fires when a quantum is not strictly positive and finite.
     #[error("unit quantum must be positive and finite, got {value}")]
     InvalidQuantum { value: f64 },
+    /// Fires when an initial stock value is the projection of more than one quantum count.
+    #[error(
+        "initial stock in compartment `{compartment}` for substance `{substance}` has ambiguous value {value} at quantum {quantum}"
+    )]
+    AmbiguousInitialStock {
+        compartment: CompartmentId,
+        substance: SubstanceId,
+        value: f64,
+        quantum: f64,
+    },
     /// Fires when an initial stock is not an exact whole multiple of its substance quantum.
     #[error(
         "initial stock in compartment `{compartment}` for substance `{substance}` has value {value}, not an exact multiple of quantum {quantum}"

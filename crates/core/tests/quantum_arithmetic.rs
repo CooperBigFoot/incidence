@@ -406,6 +406,12 @@ fn release_all_of_an_exact_quantum_image_leaves_no_residual_count() {
     let artifact = release_all_artifact(0.1, 4.3);
     let water = SubstanceId::parse("water").expect("valid substance");
     let log = execute_model(&artifact, RunId::from_bytes([0x48; 16])).expect("valid run");
+    assert_eq!(
+        log.transfers()[0]
+            .quantum_count(&water)
+            .map(incidence_core::ledger::QuantumCount::value),
+        Some(43)
+    );
     let replay = replay_with_artifact(&log, &artifact).expect("valid replay");
 
     assert_eq!(

@@ -4,7 +4,8 @@ use incidence_core::endpoints::{BoundaryAccount, FiniteCompartment};
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{
-    AuthoritativeLog, CompletenessReader, Genesis, Record, ReplayError, RunId, RunStatus, Transfer,
+    AuthoritativeLog, CompletenessReader, Genesis, QuantumCount, Record, ReplayError, RunId,
+    RunStatus, Transfer,
 };
 use incidence_core::model_artifact::{
     ModelArtifact, ModelArtifactArchive, Quantum, SubstanceUnit, UnitId,
@@ -107,12 +108,19 @@ fn replay_is_dense_exact_and_seal_distinguishes_prefix() {
     )
     .expect("vector");
     let mut log = AuthoritativeLog::for_run(RunId::from_bytes([7; 16]), &artifact);
-    log.append(Transfer::new(
-        TimestepIndex::new(1),
-        endpoint(&artifact, "store"),
-        endpoint(&artifact, "route"),
-        amount,
-    ))
+    log.append(
+        Transfer::new(
+            TimestepIndex::new(1),
+            endpoint(&artifact, "store"),
+            endpoint(&artifact, "route"),
+            amount,
+            [(
+                water.clone(),
+                QuantumCount::try_from(3000000).expect("count"),
+            )],
+        )
+        .expect("count-bound transfer"),
+    )
     .expect("append");
     let mut archive = ModelArtifactArchive::new();
     archive.insert(artifact).expect("archive");
@@ -170,12 +178,16 @@ fn zero_transfer_is_authoritative_and_seal_authenticates_it() {
     let mut without = AuthoritativeLog::for_run(RunId::from_bytes([7; 16]), &artifact);
     let first = without.digest();
     without
-        .append(Transfer::new(
-            TimestepIndex::new(0),
-            endpoint(&artifact, "store"),
-            endpoint(&artifact, "route"),
-            empty,
-        ))
+        .append(
+            Transfer::new(
+                TimestepIndex::new(0),
+                endpoint(&artifact, "store"),
+                endpoint(&artifact, "route"),
+                empty,
+                [],
+            )
+            .expect("count-bound transfer"),
+        )
         .expect("append");
     assert_ne!(first, without.digest());
     assert_eq!(without.transfer_count(), 1);

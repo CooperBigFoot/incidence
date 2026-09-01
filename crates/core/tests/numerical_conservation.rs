@@ -4,7 +4,7 @@ use incidence_core::endpoints::FiniteCompartment;
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
 use incidence_core::ledger::{
-    AuthoritativeLog, ReplayError, RunId, Transfer, replay_with_artifact,
+    AuthoritativeLog, QuantumCount, ReplayError, RunId, Transfer, replay_with_artifact,
 };
 use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::non_negative_amount::NonNegativeAmount;
@@ -85,20 +85,27 @@ fn replay_rejects_a_transfer_smaller_than_one_quantum() {
     )
     .expect("valid transfer amount");
     let mut log = AuthoritativeLog::for_run(RunId::from_bytes([31; 16]), &artifact);
-    log.append(Transfer::new(
-        TimestepIndex::new(0),
-        artifact
-            .topology()
-            .endpoint(&source)
-            .expect("source endpoint")
-            .clone(),
-        artifact
-            .topology()
-            .endpoint(&target)
-            .expect("target endpoint")
-            .clone(),
-        amount,
-    ))
+    log.append(
+        Transfer::new(
+            TimestepIndex::new(0),
+            artifact
+                .topology()
+                .endpoint(&source)
+                .expect("source endpoint")
+                .clone(),
+            artifact
+                .topology()
+                .endpoint(&target)
+                .expect("target endpoint")
+                .clone(),
+            amount,
+            [(
+                SubstanceId::parse("water").expect("water"),
+                QuantumCount::try_from(0).expect("count"),
+            )],
+        )
+        .expect("count-bound transfer"),
+    )
     .expect("structurally valid transfer");
 
     assert!(matches!(

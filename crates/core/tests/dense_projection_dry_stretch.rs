@@ -4,7 +4,7 @@ use incidence_core::dense_projection::{DenseProjectionError, DenseTransferProjec
 use incidence_core::endpoints::{BoundaryAccount, FiniteCompartment};
 use incidence_core::identity::{CompartmentId, SubstanceId};
 use incidence_core::initial_stocks::InitialStocks;
-use incidence_core::ledger::{AuthoritativeLog, RunId, Transfer};
+use incidence_core::ledger::{AuthoritativeLog, QuantumCount, RunId, Transfer};
 use incidence_core::model_artifact::{ModelArtifact, Quantum, SubstanceUnit, UnitId};
 use incidence_core::non_negative_amount::NonNegativeAmount;
 use incidence_core::presence::ValueState;
@@ -87,12 +87,19 @@ fn dense_projection_preserves_a_forty_step_dry_stretch() {
     .expect("transfer vector");
     let mut log = AuthoritativeLog::for_run(RunId::from_bytes([5; 16]), &artifact);
     for timestep in [14, 55] {
-        log.append(Transfer::new(
-            TimestepIndex::new(timestep),
-            endpoint(&artifact, "store"),
-            endpoint(&artifact, "downstream"),
-            amount.clone(),
-        ))
+        log.append(
+            Transfer::new(
+                TimestepIndex::new(timestep),
+                endpoint(&artifact, "store"),
+                endpoint(&artifact, "downstream"),
+                amount.clone(),
+                [(
+                    water.clone(),
+                    QuantumCount::try_from(1000000).expect("count"),
+                )],
+            )
+            .expect("count-bound transfer"),
+        )
         .expect("append transfer");
     }
     log.seal(artifact.horizon().last()).expect("seal log");

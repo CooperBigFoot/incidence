@@ -13,7 +13,7 @@ use crate::execution_bindings::RuleInputSource;
 use crate::identity::{CompartmentId, SubstanceId};
 use crate::interpolation_table::{InterpolationBoundaryPolicy, InterpolationTable};
 use crate::ledger::{
-    AuthoritativeLog, LogError, ReplayError, RunId, Transfer, TransferEndpoint,
+    AuthoritativeLog, LogError, QuantumCount, ReplayError, RunId, Transfer, TransferEndpoint,
     replay_with_artifact,
 };
 use crate::model_artifact::{ModelArtifact, RuleDefinition};
@@ -652,9 +652,14 @@ fn evaluate_partition(
             })?;
     let mut allocations = Vec::new();
     let mut transfer_count = 0_u128;
-    let mut add_branch = |branch: &TransferBranchId, value: f64| -> Result<(), ExecutionError> {
+    let mut add_branch = |branch: &TransferBranchId,
+                          value: f64,
+                          authoritative_count: Option<u64>|
+     -> Result<(), ExecutionError> {
         let raw = amount(rule, timestep, value)?;
-        let count =
+        let count = if let Some(count) = authoritative_count {
+            count
+        } else {
             quantum
                 .floor_count(raw.value())
                 .ok_or_else(|| ExecutionError::InvalidAmount {
@@ -662,7 +667,15 @@ fn evaluate_partition(
                     substance: rule.substance().clone(),
                     timestep,
                     bits: value.to_bits(),
-                })?;
+                })?
+        };
+        let authoritative =
+            QuantumCount::try_from(count).map_err(|_| ExecutionError::InvalidAmount {
+                compartment: rule.compartment().clone(),
+                substance: rule.substance().clone(),
+                timestep,
+                bits: value.to_bits(),
+            })?;
         let quantized_value =
             quantum
                 .to_value(count)
@@ -695,7 +708,7 @@ fn evaluate_partition(
                 });
             }
         };
-        allocations.push(Allocation::new(target, quantized));
+        allocations.push(Allocation::from_count(target, quantized, authoritative));
         transfer_count += u128::from(count);
         Ok(())
     };
@@ -705,12 +718,14 @@ fn evaluate_partition(
         }
         PartitionExprView::ReleaseAll { branch } => {
             let evaluated_amount = interpreter.evaluate()?;
-            add_branch(branch, evaluated_amount)?;
+            let authoritative_count = (evaluated_amount.to_bits() == available.value().to_bits())
+                .then_some(available_count);
+            add_branch(branch, evaluated_amount, authoritative_count)?;
         }
         PartitionExprView::ConstantFractionTransfer { branch, fraction } => {
             let evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
             let value = s.multiply(evaluated_amount.value(), fraction.value())?;
-            add_branch(branch, value)?;
+            add_branch(branch, value, None)?;
         }
         PartitionExprView::FixedFractionSplit {
             retained_fraction: _,
@@ -719,7 +734,7 @@ fn evaluate_partition(
             let evaluated_amount = amount(rule, timestep, interpreter.evaluate()?)?;
             for branch in branches {
                 let value = s.multiply(evaluated_amount.value(), branch.fraction().value())?;
-                add_branch(branch.branch(), value)?;
+                add_branch(branch.branch(), value, None)?;
             }
         }
         PartitionExprView::ExogenousSeries { branch, series } => {
@@ -738,12 +753,12 @@ fn evaluate_partition(
                     kind: "forcing",
                     identity: series.id().as_str().to_owned(),
                 })?;
-            add_branch(branch, value)?;
+            add_branch(branch, value, None)?;
         }
         PartitionExprView::ExpressionPartition { branches } => {
             for branch in branches {
                 let value = interpreter.evaluate_expression(branch.expression())?;
-                add_branch(branch.branch(), value)?;
+                add_branch(branch.branch(), value, None)?;
             }
         }
     }
