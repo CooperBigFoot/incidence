@@ -1,5 +1,7 @@
 # incidence
 
+**Status: 🟢 Active** — Ongoing project — active development.
+
 A substance-agnostic, event-sourced conserved-flow engine for directed compartment networks.
 
 ## Architecture
